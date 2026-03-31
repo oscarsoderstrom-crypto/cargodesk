@@ -1,0 +1,36 @@
+css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+```
+
+3. Save
+
+**4d. Install Tailwind CSS:**
+
+In the terminal:
+
+```
+npm install tailwindcss @tailwindcss/vite
+```
+
+**4e. Update vite.config.js:**
+
+1. Open `vite.config.js` (in the root folder, not inside src)
+2. Replace ALL contents with:
+
+```javascript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  base: '/cargodesk/',
+})
