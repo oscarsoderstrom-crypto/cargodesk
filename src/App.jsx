@@ -2,8 +2,7 @@ import { useState, useEffect, useMemo, createContext, useContext, useCallback } 
 import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check } from "lucide-react";
 import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB, getMode } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
-import DocumentsTab from "./components/DocumentsTab.jsx";
-import CostsTab from "./components/CostsTab.jsx";
+import ShipmentDetail from "./components/ShipmentDetail.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import SortFilterBar, { sortShipments } from "./components/SortFilterBar.jsx";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
@@ -104,52 +103,7 @@ function NotifPanel({notifications,dismissed,onDismiss,onDismissAll,onClose,onCl
       {dismissedList.length>0&&<div style={{padding:"8px 16px",fontSize:11,color:T.text3,background:T.bg4,textAlign:"center"}}>{dismissedList.length} dismissed notification{dismissedList.length>1?"s":""}</div>}
     </div></div>;}
 
-function ShipmentDetail({shipment,project,onBack,onToggleMilestone,onUpdate,rates}){const T=useT();
-  const[tab,setTab]=useState("overview");
-  const milestones=shipment.milestones||[];
-  const mono="'JetBrains Mono',monospace";
-  const totalCost=(shipment.costs?.items||[]).reduce((s,c)=>s+toEUR(c.amount,c.currency,rates),0)+(shipment.costs?.running||[]).reduce((s,r)=>{
-    const days=r.status==="running"?Math.max(1,Math.ceil((new Date()-new Date(r.startDate))/86400000)):(r.totalDays||0);
-    return s+toEUR(r.dailyRate*days,r.currency,rates);},0);
-  const quoted=shipment.costs?.quoted||0,margin=quoted-totalCost,marginPct=quoted>0?(margin/quoted*100):0;
-  const tabs=[{id:"overview",label:"Overview",icon:Eye},{id:"costs",label:"Costs",icon:DollarSign},{id:"documents",label:"Documents",icon:FileText},{id:"milestones",label:"Milestones",icon:CheckCircle2}];
-
-  return<div style={{height:"100%",overflow:"auto",background:T.bg1}}>
-    <div style={{padding:24,borderBottom:`1px solid ${T.border1}`,background:`linear-gradient(180deg,${T.bg2} 0%,${T.bg1} 100%)`}}>
-      <button onClick={onBack} style={{display:"flex",alignItems:"center",gap:4,fontSize:14,marginBottom:16,padding:"4px 8px",borderRadius:4,color:T.text2,background:"none",border:"none",cursor:"pointer"}}><ChevronLeft size={16}/> Back</button>
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}><MIcon mode={shipment.mode} size={22}/>
-            <h1 style={{fontSize:24,fontWeight:700,color:T.text0,fontFamily:mono,margin:0}}>{shipment.ref||<span style={{color:T.text3,fontStyle:"italic"}}>Ref pending</span>}</h1><Badge status={shipment.status}/></div>
-          {project&&<div style={{display:"flex",alignItems:"center",gap:8,fontSize:14,marginBottom:4}}><FolderOpen size={14} color={T.text2}/><span style={{color:T.text2}}>Project: <strong style={{color:T.text0}}>{project.name}</strong></span>{shipment.customerRef&&<span style={{color:T.text3}}>• {shipment.customerRef}</span>}</div>}
-          <div style={{fontSize:14,marginTop:8,color:T.text1}}><strong>{shipment.origin}</strong> → <strong>{shipment.destination}</strong><span style={{margin:"0 8px",color:T.border2}}>|</span>{shipment.carrier} • {shipment.containerType}</div></div>
-        <div style={{textAlign:"right"}}><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4,color:T.text2}}>Margin</div>
-          <div style={{fontSize:24,fontWeight:700,color:margin>=0?T.green:T.red,fontFamily:mono}}>{formatEUR(margin)}</div>
-          <div style={{fontSize:12,color:margin>=0?T.green:T.red}}>{marginPct.toFixed(1)}%</div></div></div></div>
-    <div style={{display:"flex",gap:0,paddingLeft:24,paddingRight:24,borderBottom:`1px solid ${T.border1}`,background:T.bg2}}>
-      {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"12px 16px",fontSize:14,fontWeight:500,color:tab===t.id?T.accent:T.text2,background:"none",border:"none",borderBottom:`2px solid ${tab===t.id?T.accent:"transparent"}`,marginBottom:-1,cursor:"pointer"}}><t.icon size={15}/>{t.label}</button>)}</div>
-    <div style={{padding:24}}>
-      {tab==="overview"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:24}}>
-        <div><h3 style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:16,color:T.text2}}>Transport Details</h3>
-          <div style={{background:T.bg2,borderRadius:10,border:`1px solid ${T.border1}`}}>
-            {[["Vessel / Vehicle",shipment.vessel||"—"],["Voyage",shipment.voyage||"—"],["Carrier",shipment.carrier||"—"],["Routing",shipment.routing||"—"],["Container / Cargo",shipment.containerType||"—"],["ETD",fmtDate(shipment.etd)],["ETA",fmtDate(shipment.eta)]].map(([l,v],i)=>
-              <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"10px 16px",borderBottom:i<6?`1px solid ${T.border0}`:"none"}}><span style={{fontSize:14,color:T.text2}}>{l}</span><span style={{fontSize:14,fontWeight:500,color:T.text0}}>{v}</span></div>)}</div></div>
-        <div><h3 style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:16,color:T.text2}}>Milestone Progress</h3>
-          {milestones.map((m,i)=>{const d=daysUntil(m.date),isNext=!m.done&&(i===0||milestones[i-1].done);
-            return<div key={m.id} style={{display:"flex",alignItems:"center",gap:12,padding:8,borderRadius:8,marginBottom:4,background:isNext?T.accentGlow:"transparent"}}>
-              <button onClick={()=>onToggleMilestone(shipment.id,m.id)} style={{flexShrink:0,cursor:"pointer",color:m.done?T.green:T.text3,background:"none",border:"none",padding:0}}>{m.done?<CheckCircle2 size={20}/>:<Circle size={20}/>}</button>
-              <div style={{flex:1}}><span style={{fontSize:14,color:m.done?T.text3:T.text0,textDecoration:m.done?"line-through":"none"}}>{m.label}</span></div>
-              <span style={{fontSize:12,color:T.text3,fontFamily:mono}}>{m.date?fmtDate(m.date):"TBD"}</span>
-              {d!==null&&!m.done&&d<=3&&d>=0&&<span style={{fontSize:11,fontWeight:700,padding:"2px 6px",borderRadius:4,background:d<=1?T.redBg:T.amberBg,color:d<=1?T.red:T.amber}}>{d===0?"TODAY":`${d}d`}</span>}</div>;})}</div></div>}
-      {tab==="costs"&&<CostsTab T={T} shipment={shipment} rates={rates} onUpdate={onUpdate}/>}
-      {tab==="documents"&&<DocumentsTab T={T} shipment={shipment} onDocumentAdded={onUpdate}/>}
-      {tab==="milestones"&&<div style={{maxWidth:540}}>{milestones.map((m,i)=>{const d=daysUntil(m.date);
-        return<div key={m.id} style={{display:"flex",gap:16}}><div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
-          <button onClick={()=>onToggleMilestone(shipment.id,m.id)} style={{cursor:"pointer",color:m.done?T.green:T.text3,background:"none",border:"none",padding:0}}>{m.done?<CheckCircle2 size={24}/>:<Circle size={24}/>}</button>
-          {i<milestones.length-1&&<div style={{width:2,flex:1,background:m.done?T.greenBorder:T.border1,minHeight:32}}/>}</div>
-          <div style={{paddingBottom:24}}><div style={{fontSize:14,fontWeight:600,color:m.done?T.text3:T.text0}}>{m.label}</div>
-            <div style={{fontSize:12,color:T.text3}}>{m.date?fmtDate(m.date):"TBD"}{d!==null&&!m.done&&d>=0&&d<=7&&<span style={{marginLeft:8,fontWeight:700,color:d<=2?T.red:T.amber}}>({d===0?"today":`in ${d} days`})</span>}</div></div></div>;})}</div>}
-    </div></div>;}
+// ShipmentDetail is now imported from ./components/ShipmentDetail.jsx
 
 function KanbanView({shipments,projects,onSelect}){const T=useT(),SC=statusCfg(T);
   return<div style={{display:"flex",gap:16,padding:24,height:"100%",overflow:"auto"}}>
@@ -312,7 +266,7 @@ export default function App(){
             <button onClick={handleNewShipment} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,fontSize:14,fontWeight:500,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}><Plus size={16}/> New Shipment</button></div>
           {notif&&<NotifPanel notifications={notifications} dismissed={dismissed} onDismiss={handleDismiss} onDismissAll={handleDismissAll} onClose={()=>setNotif(false)} onClickNotif={handleClickNotif}/>}</div>
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
-          {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail shipment={active} project={proj} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone} onUpdate={loadData} rates={rates}/></div>
+          {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail T={T} shipment={active} project={proj} statusCfg={SC} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone} onUpdate={loadData} rates={rates}/></div>
             :tab==="kanban"?<KanbanView shipments={filtered} projects={projects} onSelect={setSel}/>
             :tab==="financials"?<FinView shipments={shipments} projects={projects} rates={rates}/>
             :<>
