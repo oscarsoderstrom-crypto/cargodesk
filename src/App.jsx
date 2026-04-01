@@ -3,7 +3,8 @@ import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, B
 import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import DocumentsTab from "./components/DocumentsTab.jsx";
-
+import CostsTab from "./components/CostsTab.jsx";
+import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
 
 const DARK = {
   bg0:"#0A0E17",bg1:"#0F1421",bg2:"#161C2E",bg3:"#1C2438",bg4:"#232D45",
@@ -32,11 +33,8 @@ const LIGHT = {
 const ThemeCtx = createContext(DARK);
 const useT = () => useContext(ThemeCtx);
 
-const FX={EUR:1,USD:1.08,SEK:11.42};
-const toEUR=(a,c)=>a/(FX[c]||1);
-const fmtEUR=v=>new Intl.NumberFormat("fi-FI",{style:"currency",currency:"EUR"}).format(v);
-const daysUntil=d=>{if(!d||d==="—")return null;return Math.ceil((new Date(d)-new Date())/86400000);};
 const fmtDate=d=>{if(!d||d==="—")return"—";return new Date(d).toLocaleDateString("fi-FI",{day:"numeric",month:"short",year:"numeric"});};
+const daysUntil=d=>{if(!d||d==="—")return null;return Math.ceil((new Date(d)-new Date())/86400000);};
 const statusCfg=T=>({
   planned:{label:"Planned",color:T.text2,bg:T.bg3,ring:T.border2},
   booked:{label:"Booked",color:T.amber,bg:T.amberBg,ring:T.amberBorder},
@@ -57,35 +55,14 @@ function ThemeToggle({isDark,onToggle}){
     <div style={{width:40,height:22,borderRadius:11,background:isDark?"#1E3A5F":"#93C5FD",position:"relative",transition:"background 0.3s",flexShrink:0}}><div style={{width:16,height:16,borderRadius:"50%",background:"white",position:"absolute",top:3,left:isDark?3:21,transition:"left 0.3s",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}>{isDark?<Moon size={9} color="#1E3A5F"/>:<Sun size={9} color="#D97706"/>}</div></div>
     <span style={{fontSize:12,fontWeight:500,color:"rgba(255,255,255,0.5)"}}>{isDark?"Dark":"Light"}</span></button>;}
 
-// Generate notifications dynamically from shipment data
-function generateNotifs(shipments) {
-  const notifs = [];
-  shipments.forEach(s => {
-    s.milestones.filter(m => !m.done && m.date).forEach(m => {
-      const d = daysUntil(m.date);
-      if (d !== null && d >= -1 && d <= 7) {
-        notifs.push({
-          id: `${s.id}-${m.id}`,
-          type: d < 0 ? "warning" : "deadline",
-          message: `${m.label} for ${s.customerRef || s.ref}${d < 0 ? ` was ${Math.abs(d)}d ago` : d === 0 ? " is today" : ` in ${d} days`}`,
-          date: m.date,
-          urgent: d <= 2,
-          shipmentId: s.id,
-        });
-      }
-    });
-  });
-  notifs.sort((a, b) => {
-    const dA = daysUntil(a.date) ?? 99;
-    const dB = daysUntil(b.date) ?? 99;
-    return dA - dB;
-  });
-  return notifs;
-}
+function generateNotifs(shipments){const notifs=[];
+  shipments.forEach(s=>{(s.milestones||[]).filter(m=>!m.done&&m.date).forEach(m=>{const d=daysUntil(m.date);
+    if(d!==null&&d>=-1&&d<=7){notifs.push({id:`${s.id}-${m.id}`,type:d<0?"warning":"deadline",message:`${m.label} for ${s.customerRef||s.ref}${d<0?` was ${Math.abs(d)}d ago`:d===0?" is today":` in ${d} days`}`,date:m.date,urgent:d<=2,shipmentId:s.id});}});});
+  notifs.sort((a,b)=>(daysUntil(a.date)??99)-(daysUntil(b.date)??99));return notifs;}
 
 function DeadlineSidebar({shipments,onSelect}){const T=useT();
   const upcoming=[];
-  shipments.forEach(s=>{s.milestones.filter(m=>!m.done&&m.date).forEach(m=>{const d=daysUntil(m.date);if(d!==null&&d>=-1&&d<=14)upcoming.push({...m,shipmentRef:s.ref,customerRef:s.customerRef,shipmentId:s.id,days:d});});});
+  shipments.forEach(s=>{(s.milestones||[]).filter(m=>!m.done&&m.date).forEach(m=>{const d=daysUntil(m.date);if(d!==null&&d>=-1&&d<=14)upcoming.push({...m,shipmentRef:s.ref,customerRef:s.customerRef,shipmentId:s.id,days:d});});});
   upcoming.sort((a,b)=>a.days-b.days);
   return<div style={{width:300,minWidth:300,background:T.bg2,borderLeft:`1px solid ${T.border1}`,height:"100%",overflow:"auto"}}>
     <div style={{padding:16,borderBottom:`1px solid ${T.border1}`}}><h3 style={{fontSize:11,fontWeight:700,textTransform:"uppercase",color:T.text2,letterSpacing:"0.1em",margin:0}}>Upcoming Deadlines</h3></div>
@@ -106,13 +83,14 @@ function NotifPanel({notifications,onClose}){const T=useT();
         <div><div style={{fontSize:14,color:T.text1}}>{n.message}</div><div style={{fontSize:12,marginTop:4,color:T.text3}}>{fmtDate(n.date)}</div></div></div>)
       :<div style={{padding:24,textAlign:"center",fontSize:14,color:T.text3}}>No notifications</div>}</div></div>;}
 
-function ShipmentDetail({shipment,project,onBack,onToggleMilestone}){const T=useT();
+function ShipmentDetail({shipment,project,onBack,onToggleMilestone,onUpdate,rates}){const T=useT();
   const[tab,setTab]=useState("overview");
-  const[isDrag,setIsDrag]=useState(false);
   const milestones=shipment.milestones||[];
-  const totalCost=shipment.costs.items.reduce((s,c)=>s+toEUR(c.amount,c.currency),0)+shipment.costs.running.reduce((s,r)=>s+toEUR(r.dailyRate*(r.totalDays||0),r.currency),0);
-  const quoted=shipment.costs.quoted||0,margin=quoted-totalCost,marginPct=quoted>0?(margin/quoted*100):0;
   const mono="'JetBrains Mono',monospace";
+  const totalCost=(shipment.costs?.items||[]).reduce((s,c)=>s+toEUR(c.amount,c.currency,rates),0)+(shipment.costs?.running||[]).reduce((s,r)=>{
+    const days=r.status==="running"?Math.max(1,Math.ceil((new Date()-new Date(r.startDate))/86400000)):(r.totalDays||0);
+    return s+toEUR(r.dailyRate*days,r.currency,rates);},0);
+  const quoted=shipment.costs?.quoted||0,margin=quoted-totalCost,marginPct=quoted>0?(margin/quoted*100):0;
   const tabs=[{id:"overview",label:"Overview",icon:Eye},{id:"costs",label:"Costs",icon:DollarSign},{id:"documents",label:"Documents",icon:FileText},{id:"milestones",label:"Milestones",icon:CheckCircle2}];
 
   return<div style={{height:"100%",overflow:"auto",background:T.bg1}}>
@@ -124,7 +102,7 @@ function ShipmentDetail({shipment,project,onBack,onToggleMilestone}){const T=use
           {project&&<div style={{display:"flex",alignItems:"center",gap:8,fontSize:14,marginBottom:4}}><FolderOpen size={14} color={T.text2}/><span style={{color:T.text2}}>Project: <strong style={{color:T.text0}}>{project.name}</strong></span>{shipment.customerRef&&<span style={{color:T.text3}}>• {shipment.customerRef}</span>}</div>}
           <div style={{fontSize:14,marginTop:8,color:T.text1}}><strong>{shipment.origin}</strong> → <strong>{shipment.destination}</strong><span style={{margin:"0 8px",color:T.border2}}>|</span>{shipment.carrier} • {shipment.containerType}</div></div>
         <div style={{textAlign:"right"}}><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4,color:T.text2}}>Margin</div>
-          <div style={{fontSize:24,fontWeight:700,color:margin>=0?T.green:T.red,fontFamily:mono}}>{fmtEUR(margin)}</div>
+          <div style={{fontSize:24,fontWeight:700,color:margin>=0?T.green:T.red,fontFamily:mono}}>{formatEUR(margin)}</div>
           <div style={{fontSize:12,color:margin>=0?T.green:T.red}}>{marginPct.toFixed(1)}%</div></div></div></div>
     <div style={{display:"flex",gap:0,paddingLeft:24,paddingRight:24,borderBottom:`1px solid ${T.border1}`,background:T.bg2}}>
       {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{display:"flex",alignItems:"center",gap:8,padding:"12px 16px",fontSize:14,fontWeight:500,color:tab===t.id?T.accent:T.text2,background:"none",border:"none",borderBottom:`2px solid ${tab===t.id?T.accent:"transparent"}`,marginBottom:-1,cursor:"pointer"}}><t.icon size={15}/>{t.label}</button>)}</div>
@@ -141,24 +119,9 @@ function ShipmentDetail({shipment,project,onBack,onToggleMilestone}){const T=use
               <div style={{flex:1}}><span style={{fontSize:14,color:m.done?T.text3:T.text0,textDecoration:m.done?"line-through":"none"}}>{m.label}</span></div>
               <span style={{fontSize:12,color:T.text3,fontFamily:mono}}>{m.date?fmtDate(m.date):"TBD"}</span>
               {d!==null&&!m.done&&d<=3&&d>=0&&<span style={{fontSize:11,fontWeight:700,padding:"2px 6px",borderRadius:4,background:d<=1?T.redBg:T.amberBg,color:d<=1?T.red:T.amber}}>{d===0?"TODAY":`${d}d`}</span>}</div>;})}</div></div>}
-      {tab==="costs"&&<div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16,marginBottom:24}}>{[{l:"Quoted to Customer",v:fmtEUR(quoted),c:T.accent},{l:"Total Costs",v:fmtEUR(totalCost),c:T.text1},{l:"Margin",v:fmtEUR(margin),c:margin>=0?T.green:T.red}].map((card,i)=>
-          <div key={i} style={{padding:16,borderRadius:12,background:T.bg2,border:`1px solid ${T.border1}`}}><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4,color:T.text2}}>{card.l}</div><div style={{fontSize:20,fontWeight:700,color:card.c,fontFamily:mono}}>{card.v}</div></div>)}</div>
-        {["origin","transport","transhipment","destination"].map(cat=>{const items=(shipment.costs.items||[]).filter(c=>c.category===cat);if(!items.length)return null;
-          return<div key={cat} style={{marginBottom:16}}><h4 style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:8,paddingLeft:4,color:T.text3}}>{cat}</h4>
-            <div style={{borderRadius:10,border:`1px solid ${T.border1}`,overflow:"hidden"}}>{items.map((c,i)=>
-              <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:i<items.length-1?`1px solid ${T.border0}`:"none",background:T.bg2}}>
-                <span style={{fontSize:14,color:T.text1}}>{c.desc}</span>
-                <div style={{textAlign:"right"}}><span style={{fontSize:14,fontWeight:600,color:T.text0,fontFamily:mono}}>{c.currency} {c.amount.toLocaleString("fi-FI")}</span>
-                  {c.currency!=="EUR"&&<div style={{fontSize:12,color:T.text3}}>≈ {fmtEUR(toEUR(c.amount,c.currency))}</div>}</div></div>)}</div></div>;})}
-        {(shipment.costs.running||[]).length>0&&<div style={{marginBottom:16}}><h4 style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:8,paddingLeft:4,color:T.red}}>Running Costs</h4>
-          <div style={{borderRadius:10,border:`1px solid ${T.redBorder}`,overflow:"hidden"}}>{shipment.costs.running.map(r=>
-            <div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",background:T.redBg}}>
-              <div><span style={{fontSize:14,fontWeight:500,color:T.text1}}>{r.desc}</span><div style={{fontSize:12,marginTop:2,color:T.text2}}>{fmtDate(r.startDate)} → {r.status==="running"?"ongoing":fmtDate(r.endDate)} • {r.totalDays||"?"} days × {r.currency} {r.dailyRate}</div></div>
-              <div style={{display:"flex",alignItems:"center",gap:12}}><span style={{fontSize:14,fontWeight:700,color:T.red,fontFamily:mono}}>{r.currency} {((r.totalDays||0)*r.dailyRate).toLocaleString("fi-FI")}</span>
-                <span style={{fontSize:11,padding:"2px 8px",borderRadius:10,fontWeight:600,background:r.status==="running"?T.redBg:T.greenBg,color:r.status==="running"?T.red:T.green,border:`1px solid ${r.status==="running"?T.redBorder:T.greenBorder}`}}>{r.status==="running"?"RUNNING":"STOPPED"}</span></div></div>)}</div></div>}
-        <button style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",borderRadius:8,fontSize:14,fontWeight:500,marginTop:8,color:T.accent,border:`1px dashed ${T.border2}`,background:"none",cursor:"pointer"}}><Plus size={16}/> Add Cost Item</button></div>}
-      {tab==="documents"&&<DocumentsTab T={T} shipment={shipment} onDocumentAdded={loadData}/>}      {tab==="milestones"&&<div style={{maxWidth:540}}>{milestones.map((m,i)=>{const d=daysUntil(m.date);
+      {tab==="costs"&&<CostsTab T={T} shipment={shipment} rates={rates} onUpdate={onUpdate}/>}
+      {tab==="documents"&&<DocumentsTab T={T} shipment={shipment} onDocumentAdded={onUpdate}/>}
+      {tab==="milestones"&&<div style={{maxWidth:540}}>{milestones.map((m,i)=>{const d=daysUntil(m.date);
         return<div key={m.id} style={{display:"flex",gap:16}}><div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
           <button onClick={()=>onToggleMilestone(shipment.id,m.id)} style={{cursor:"pointer",color:m.done?T.green:T.text3,background:"none",border:"none",padding:0}}>{m.done?<CheckCircle2 size={24}/>:<Circle size={24}/>}</button>
           {i<milestones.length-1&&<div style={{width:2,flex:1,background:m.done?T.greenBorder:T.border1,minHeight:32}}/>}</div>
@@ -171,19 +134,21 @@ function KanbanView({shipments,projects,onSelect}){const T=useT(),SC=statusCfg(T
     {["planned","booked","in_transit","arrived","delivered"].map(st=>{const items=shipments.filter(s=>s.status===st),cfg=SC[st];
       return<div key={st} style={{minWidth:260,width:260,flex:"0 0 260px"}}>
         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingLeft:4}}><div style={{width:10,height:10,borderRadius:"50%",background:cfg.color}}/><span style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",color:cfg.color}}>{cfg.label}</span><span style={{fontSize:11,fontWeight:700,padding:"1px 6px",borderRadius:10,background:cfg.bg,color:cfg.color}}>{items.length}</span></div>
-        <div>{items.map(s=>{const proj=projects.find(p=>p.id===s.projectId),nm=s.milestones.find(m=>!m.done&&m.date),d=nm?daysUntil(nm.date):null;
+        <div>{items.map(s=>{const proj=projects.find(p=>p.id===s.projectId),nm=(s.milestones||[]).find(m=>!m.done&&m.date),d=nm?daysUntil(nm.date):null;
           return<button key={s.id} onClick={()=>onSelect(s.id)} style={{width:"100%",textAlign:"left",padding:12,borderRadius:12,marginBottom:8,background:T.bg2,border:`1px solid ${T.border1}`,cursor:"pointer",display:"block",transition:"all 0.15s"}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow=`0 6px 20px ${T.shadow}`;}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border1;e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="none";}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,fontWeight:700,color:T.text1,fontFamily:"'JetBrains Mono',monospace"}}>{s.ref}</span><MIcon mode={s.mode} size={14}/></div>
             {proj&&<div style={{fontSize:12,marginBottom:6,color:T.text2}}><span style={{fontWeight:600,color:T.text1}}>{proj.name}</span> • {s.customerRef}</div>}
-            <div style={{fontSize:12,marginBottom:8,color:T.text2}}>{s.origin} → {s.destination}</div><PBar milestones={s.milestones}/>
+            <div style={{fontSize:12,marginBottom:8,color:T.text2}}>{s.origin} → {s.destination}</div><PBar milestones={s.milestones||[]}/>
             {nm&&d!==null&&d<=5&&<div style={{marginTop:8,display:"flex",alignItems:"center",gap:6,fontSize:12,fontWeight:500,color:d<=2?T.red:T.amber}}><Clock size={12}/>{nm.label} {d===0?"today":d<0?`${Math.abs(d)}d ago`:`in ${d}d`}</div>}
           </button>;})}
           {!items.length&&<div style={{padding:16,textAlign:"center",fontSize:12,borderRadius:12,color:T.text3,background:T.bg2,border:`1px dashed ${T.border1}`}}>No shipments</div>}</div></div>;})}</div>;}
 
-function FinView({shipments,projects}){const T=useT(),[groupBy,setGroupBy]=useState("all");
-  const calc=s=>{const c=(s.costs?.items||[]).reduce((a,i)=>a+toEUR(i.amount,i.currency),0)+(s.costs?.running||[]).reduce((a,r)=>a+toEUR(r.dailyRate*(r.totalDays||0),r.currency),0);return{quoted:s.costs?.quoted||0,cost:c,margin:(s.costs?.quoted||0)-c};};
+function FinView({shipments,projects,rates}){const T=useT(),[groupBy,setGroupBy]=useState("all");
+  const calc=s=>{const c=(s.costs?.items||[]).reduce((a,i)=>a+toEUR(i.amount,i.currency,rates),0)+(s.costs?.running||[]).reduce((a,r)=>{
+    const days=r.status==="running"?Math.max(1,Math.ceil((new Date()-new Date(r.startDate))/86400000)):(r.totalDays||0);
+    return a+toEUR(r.dailyRate*days,r.currency,rates);},0);return{quoted:s.costs?.quoted||0,cost:c,margin:(s.costs?.quoted||0)-c};};
   const grouped=groupBy==="project"?[...projects.map(p=>({label:p.name,customer:p.customer,shipments:shipments.filter(s=>s.projectId===p.id)})),{label:"Loose Shipments",customer:"—",shipments:shipments.filter(s=>!s.projectId)}].filter(g=>g.shipments.length>0):[{label:"All Shipments",customer:"",shipments}];
   const gt=shipments.reduce((a,s)=>{const f=calc(s);return{quoted:a.quoted+f.quoted,cost:a.cost+f.cost,margin:a.margin+f.margin};},{quoted:0,cost:0,margin:0});
   const mono="'JetBrains Mono',monospace";
@@ -193,15 +158,15 @@ function FinView({shipments,projects}){const T=useT(),[groupBy,setGroupBy]=useSt
       <div style={{display:"flex",gap:4,background:T.bg2,borderRadius:8,padding:3,border:`1px solid ${T.border1}`}}>
         {["all","project"].map(g=><button key={g} onClick={()=>setGroupBy(g)} style={{padding:"6px 12px",borderRadius:6,fontSize:12,fontWeight:500,background:groupBy===g?T.accent:"transparent",color:groupBy===g?"white":T.text2,border:"none",cursor:"pointer"}}>{g==="all"?"All":"By Project"}</button>)}</div></div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16,marginBottom:24}}>{[
-      {l:"Total Quoted",v:fmtEUR(gt.quoted),c:T.accent,bg:T.accentGlow,b:"rgba(59,130,246,0.2)"},
-      {l:"Total Costs",v:fmtEUR(gt.cost),c:T.text1,bg:T.bg2,b:T.border1},
-      {l:"Total Margin",v:fmtEUR(gt.margin),c:gt.margin>=0?T.green:T.red,bg:gt.margin>=0?T.greenBg:T.redBg,b:gt.margin>=0?T.greenBorder:T.redBorder}
+      {l:"Total Quoted",v:formatEUR(gt.quoted),c:T.accent,bg:T.accentGlow,b:"rgba(59,130,246,0.2)"},
+      {l:"Total Costs",v:formatEUR(gt.cost),c:T.text1,bg:T.bg2,b:T.border1},
+      {l:"Total Margin",v:formatEUR(gt.margin),c:gt.margin>=0?T.green:T.red,bg:gt.margin>=0?T.greenBg:T.redBg,b:gt.margin>=0?T.greenBorder:T.redBorder}
     ].map((c,i)=><div key={i} style={{padding:20,borderRadius:12,background:c.bg,border:`1px solid ${c.b}`}}><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4,color:T.text2}}>{c.l}</div><div style={{fontSize:24,fontWeight:700,color:c.c,fontFamily:mono}}>{c.v}</div></div>)}</div>
     {grouped.map((group,gi)=>{const gf=group.shipments.reduce((a,s)=>{const f=calc(s);return{quoted:a.quoted+f.quoted,cost:a.cost+f.cost,margin:a.margin+f.margin};},{quoted:0,cost:0,margin:0});
       return<div key={gi} style={{marginBottom:24}}>
         {groupBy==="project"&&<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,paddingLeft:4}}>
           <div><span style={{fontWeight:700,fontSize:14,color:T.text0}}>{group.label}</span>{group.customer!=="—"&&<span style={{fontSize:12,marginLeft:8,color:T.text2}}>{group.customer}</span>}</div>
-          <span style={{fontWeight:700,fontSize:14,color:gf.margin>=0?T.green:T.red,fontFamily:mono}}>Margin: {fmtEUR(gf.margin)}</span></div>}
+          <span style={{fontWeight:700,fontSize:14,color:gf.margin>=0?T.green:T.red,fontFamily:mono}}>Margin: {formatEUR(gf.margin)}</span></div>}
         <div style={{borderRadius:10,border:`1px solid ${T.border1}`,overflow:"hidden"}}>
           <table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{background:T.bg3}}>{["Reference","Route","Status","Quoted","Costs","Margin",""].map((h,i)=>
             <th key={i} style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",textAlign:"left",padding:"10px 16px",color:T.text3,borderBottom:`1px solid ${T.border1}`}}>{h}</th>)}</tr></thead>
@@ -211,9 +176,9 @@ function FinView({shipments,projects}){const T=useT(),[groupBy,setGroupBy]=useSt
                 <td style={{padding:"12px 16px"}}><div style={{fontSize:14,fontWeight:700,fontFamily:mono,color:T.text0}}>{s.ref}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</td>
                 <td style={{padding:"12px 16px"}}><div style={{display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.text1}}><MIcon mode={s.mode} size={13}/>{s.origin} → {s.destination}</div></td>
                 <td style={{padding:"12px 16px"}}><Badge status={s.status}/></td>
-                <td style={{padding:"12px 16px",fontSize:14,fontWeight:500,fontFamily:mono,color:T.text1}}>{fmtEUR(f.quoted)}</td>
-                <td style={{padding:"12px 16px",fontSize:14,fontWeight:500,fontFamily:mono,color:T.text1}}>{fmtEUR(f.cost)}</td>
-                <td style={{padding:"12px 16px"}}><span style={{fontSize:14,fontWeight:700,fontFamily:mono,color:f.margin>=0?T.green:T.red}}>{fmtEUR(f.margin)}</span><span style={{fontSize:12,marginLeft:4,color:f.margin>=0?T.green:T.red}}>({pct.toFixed(1)}%)</span></td>
+                <td style={{padding:"12px 16px",fontSize:14,fontWeight:500,fontFamily:mono,color:T.text1}}>{formatEUR(f.quoted)}</td>
+                <td style={{padding:"12px 16px",fontSize:14,fontWeight:500,fontFamily:mono,color:T.text1}}>{formatEUR(f.cost)}</td>
+                <td style={{padding:"12px 16px"}}><span style={{fontSize:14,fontWeight:700,fontFamily:mono,color:f.margin>=0?T.green:T.red}}>{formatEUR(f.margin)}</span><span style={{fontSize:12,marginLeft:4,color:f.margin>=0?T.green:T.red}}>({pct.toFixed(1)}%)</span></td>
                 <td style={{padding:"12px 16px"}}>{(s.costs?.running||[]).some(r=>r.status==="running")&&<span style={{display:"flex",alignItems:"center",gap:4,fontSize:11,fontWeight:700,color:T.red}}>RUNNING</span>}</td>
               </tr>;})}</tbody></table></div></div>;})}</div>;}
 
@@ -242,71 +207,37 @@ export default function App(){
   const[exp,setExp]=useState([]);
   const[showNewShipment,setShowNewShipment]=useState(false);
   const[nextRef,setNextRef]=useState("");
-
-  // Database state
   const[shipments,setShipments]=useState([]);
   const[projects,setProjects]=useState([]);
   const[loading,setLoading]=useState(true);
+  const[rates,setRates]=useState(FALLBACK_RATES);
 
-  // Load data from IndexedDB
-  const loadData = useCallback(async () => {
-    try {
-      await initDB();
-      const [s, p] = await Promise.all([getShipments(), getProjects()]);
-      setShipments(s);
-      setProjects(p);
-      setExp(p.map(pr => pr.id));
-    } catch (err) {
-      console.error("Failed to load data:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loadData=useCallback(async()=>{
+    try{await initDB();const[s,p]=await Promise.all([getShipments(),getProjects()]);setShipments(s);setProjects(p);setExp(p.map(pr=>pr.id));}
+    catch(err){console.error("Failed to load data:",err);}finally{setLoading(false);}
+  },[]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(()=>{loadData();},[loadData]);
+  useEffect(()=>{fetchRates().then(setRates).catch(()=>{});},[]);
 
-  const notifications = useMemo(() => generateNotifs(shipments), [shipments]);
-
+  const notifications=useMemo(()=>generateNotifs(shipments),[shipments]);
   const SC=statusCfg(T);
   const filtered=useMemo(()=>{let r=shipments;if(filt!=="all")r=r.filter(s=>s.status===filt);if(q){const lq=q.toLowerCase();r=r.filter(s=>s.ref.toLowerCase().includes(lq)||(s.customerRef||"").toLowerCase().includes(lq)||s.origin.toLowerCase().includes(lq)||s.destination.toLowerCase().includes(lq)||s.carrier.toLowerCase().includes(lq)||projects.find(p=>p.id===s.projectId)?.name.toLowerCase().includes(lq));}return r;},[filt,q,shipments,projects]);
   const active=shipments.find(s=>s.id===sel),proj=active?projects.find(p=>p.id===active.projectId):null;
   const urgCt=notifications.filter(n=>n.urgent).length;
   const navs=[{id:"dashboard",label:"Dashboard",icon:LayoutDashboard},{id:"kanban",label:"Board",icon:Columns3},{id:"financials",label:"Financials",icon:BarChart3}];
 
-  const handleNewShipment = async () => {
-    const ref = await getNextRef();
-    setNextRef(ref);
-    setShowNewShipment(true);
-  };
+  const handleNewShipment=async()=>{const ref=await getNextRef();setNextRef(ref);setShowNewShipment(true);};
+  const handleSaveShipment=async(shipment,newProject)=>{try{if(newProject)await addProject(newProject);await addShipment(shipment);setShowNewShipment(false);await loadData();setSel(shipment.id);}catch(err){console.error("Failed to save:",err);}};
+  const handleToggleMilestone=async(sid,mid)=>{await dbToggleMilestone(sid,mid);await loadData();};
 
-  const handleSaveShipment = async (shipment, newProject) => {
-    try {
-      if (newProject) await addProject(newProject);
-      await addShipment(shipment);
-      setShowNewShipment(false);
-      await loadData();
-      setSel(shipment.id);
-    } catch (err) {
-      console.error("Failed to save shipment:", err);
-    }
-  };
-
-  const handleToggleMilestone = async (shipmentId, milestoneId) => {
-    await dbToggleMilestone(shipmentId, milestoneId);
-    await loadData();
-  };
-
-  if (loading) {
-    return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg1}}>
-      <div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div>
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-    </div>;
-  }
+  if(loading)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg1}}>
+    <div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div>
+    <style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style></div>;
 
   return<ThemeCtx.Provider value={T}>
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,sans-serif",background:T.bg1,color:T.text1,transition:"background 0.3s,color 0.3s"}}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-      {/* Sidebar */}
       <div style={{width:220,minWidth:220,background:"#0A0E17",display:"flex",flexDirection:"column",borderRight:"1px solid #1A2236"}}>
         <div style={{padding:"20px 20px 12px"}}><div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#2563EB,#60A5FA)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 20px rgba(59,130,246,0.3)"}}><Anchor size={18} color="white"/></div>
@@ -318,7 +249,6 @@ export default function App(){
           <div style={{fontSize:24,fontWeight:700,color:"#F1F5F9",fontFamily:"'JetBrains Mono',monospace"}}>{shipments.filter(s=>!["delivered","completed"].includes(s.status)).length}</div>
           <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginTop:4,color:"#3B82F6"}}><Ship size={12}/>{shipments.filter(s=>s.status==="in_transit").length} in transit</div></div>
         <div style={{padding:"0 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div></div>
-      {/* Main */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px",background:T.bg2,borderBottom:`1px solid ${T.border1}`,minHeight:56,position:"relative"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flex:1}}>
@@ -334,9 +264,9 @@ export default function App(){
             <button onClick={handleNewShipment} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,fontSize:14,fontWeight:500,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}><Plus size={16}/> New Shipment</button></div>
           {notif&&<NotifPanel notifications={notifications} onClose={()=>setNotif(false)}/>}</div>
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
-          {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail shipment={active} project={proj} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone}/></div>
+          {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail shipment={active} project={proj} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone} onUpdate={loadData} rates={rates}/></div>
             :tab==="kanban"?<KanbanView shipments={filtered} projects={projects} onSelect={setSel}/>
-            :tab==="financials"?<FinView shipments={shipments} projects={projects}/>
+            :tab==="financials"?<FinView shipments={shipments} projects={projects} rates={rates}/>
             :<>
               <div style={{flex:1,overflow:"auto",padding:24}}>
                 {projects.map(p=>{const ps=filtered.filter(s=>s.projectId===p.id);if(!ps.length)return null;const isExp=exp.includes(p.id);
@@ -351,6 +281,5 @@ export default function App(){
                   <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px"}}><Package size={16} color={T.text2}/><span style={{fontWeight:700,fontSize:14,color:T.text0}}>Loose Shipments</span></div>
                   {filtered.filter(s=>!s.projectId).map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)}/>)}</div>}</div>
               <DeadlineSidebar shipments={shipments} onSelect={setSel}/></>}</div></div>
-      {/* New Shipment Modal */}
       {showNewShipment&&<NewShipmentModal T={T} projects={projects} nextRef={nextRef} onSave={handleSaveShipment} onClose={()=>setShowNewShipment(false)}/>}
     </div></ThemeCtx.Provider>;}
