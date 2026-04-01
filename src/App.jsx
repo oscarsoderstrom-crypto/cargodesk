@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
-import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings } from "lucide-react";
+import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check } from "lucide-react";
 import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB, getMode } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import DocumentsTab from "./components/DocumentsTab.jsx";
 import CostsTab from "./components/CostsTab.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
+import SortFilterBar, { sortShipments } from "./components/SortFilterBar.jsx";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
 
 const DARK = {
@@ -56,9 +57,14 @@ function ThemeToggle({isDark,onToggle}){
     <div style={{width:40,height:22,borderRadius:11,background:isDark?"#1E3A5F":"#93C5FD",position:"relative",transition:"background 0.3s",flexShrink:0}}><div style={{width:16,height:16,borderRadius:"50%",background:"white",position:"absolute",top:3,left:isDark?3:21,transition:"left 0.3s",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}>{isDark?<Moon size={9} color="#1E3A5F"/>:<Sun size={9} color="#D97706"/>}</div></div>
     <span style={{fontSize:12,fontWeight:500,color:"rgba(255,255,255,0.5)"}}>{isDark?"Dark":"Light"}</span></button>;}
 
+// --- Dismissed notifications stored in localStorage ---
+const DISMISSED_KEY = "cargodesk_dismissed_notifs";
+function getDismissed(){try{return JSON.parse(localStorage.getItem(DISMISSED_KEY)||"[]");}catch{return[];}}
+function setDismissed(ids){try{localStorage.setItem(DISMISSED_KEY,JSON.stringify(ids));}catch{}}
+
 function generateNotifs(shipments){const notifs=[];
   shipments.forEach(s=>{(s.milestones||[]).filter(m=>!m.done&&m.date).forEach(m=>{const d=daysUntil(m.date);
-    if(d!==null&&d>=-1&&d<=7){notifs.push({id:`${s.id}-${m.id}`,type:d<0?"warning":"deadline",message:`${m.label} for ${s.customerRef||s.ref}${d<0?` was ${Math.abs(d)}d ago`:d===0?" is today":` in ${d} days`}`,date:m.date,urgent:d<=2,shipmentId:s.id});}});});
+    if(d!==null&&d>=-1&&d<=7){notifs.push({id:`${s.id}-${m.id}`,type:d<0?"warning":"deadline",message:`${m.label} for ${s.customerRef||s.ref||"pending ref"}${d<0?` was ${Math.abs(d)}d ago`:d===0?" is today":` in ${d} days`}`,date:m.date,urgent:d<=2,shipmentId:s.id});}});});
   notifs.sort((a,b)=>(daysUntil(a.date)??99)-(daysUntil(b.date)??99));return notifs;}
 
 function DeadlineSidebar({shipments,onSelect}){const T=useT();
@@ -72,17 +78,31 @@ function DeadlineSidebar({shipments,onSelect}){const T=useT();
         onMouseEnter={e=>e.currentTarget.style.transform="translateX(2px)"} onMouseLeave={e=>e.currentTarget.style.transform="translateX(0)"}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:11,fontWeight:700,color:past?T.red:urg?T.amber:T.accent,fontFamily:"'JetBrains Mono',monospace"}}>{item.days<0?`${Math.abs(item.days)}d overdue`:item.days===0?"TODAY":`${item.days}d`}</span>{(past||urg)&&<AlertTriangle size={13} color={past?T.red:T.amber}/>}</div>
         <div style={{fontSize:14,fontWeight:600,color:T.text0}}>{item.label}</div>
-        <div style={{fontSize:12,marginTop:2,color:T.text2}}>{item.customerRef||item.shipmentRef}</div></button>;})}
+        <div style={{fontSize:12,marginTop:2,color:T.text2}}>{item.customerRef||item.shipmentRef||"Pending ref"}</div></button>;})}
       {!upcoming.length&&<div style={{padding:16,textAlign:"center",fontSize:14,color:T.text3}}>No upcoming deadlines</div>}</div></div>;}
 
-function NotifPanel({notifications,onClose}){const T=useT();
-  return<div style={{position:"absolute",top:48,right:16,width:380,background:T.bg3,borderRadius:12,boxShadow:`0 20px 60px ${T.shadowHeavy}`,border:`1px solid ${T.border2}`,zIndex:100}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:16,borderBottom:`1px solid ${T.border1}`}}><h3 style={{fontWeight:700,fontSize:14,color:T.text0,margin:0}}>Notifications</h3><button onClick={onClose} style={{cursor:"pointer",background:"none",border:"none",color:T.text2,padding:4}}><X size={16}/></button></div>
-    <div style={{maxHeight:400,overflow:"auto"}}>{notifications.length?notifications.map(n=>
-      <div key={n.id} style={{padding:12,display:"flex",gap:12,alignItems:"flex-start",borderBottom:`1px solid ${T.border0}`}}>
-        <div style={{marginTop:2}}>{n.type==="deadline"&&<Clock size={16} color={n.urgent?T.amber:T.text2}/>}{n.type==="warning"&&<AlertTriangle size={16} color={T.red}/>}{n.type==="info"&&<CheckCircle2 size={16} color={T.green}/>}</div>
-        <div><div style={{fontSize:14,color:T.text1}}>{n.message}</div><div style={{fontSize:12,marginTop:4,color:T.text3}}>{fmtDate(n.date)}</div></div></div>)
-      :<div style={{padding:24,textAlign:"center",fontSize:14,color:T.text3}}>No notifications</div>}</div></div>;}
+function NotifPanel({notifications,dismissed,onDismiss,onDismissAll,onClose,onClickNotif}){const T=useT();
+  const active=notifications.filter(n=>!dismissed.includes(n.id));
+  const dismissedList=notifications.filter(n=>dismissed.includes(n.id));
+  return<div style={{position:"absolute",top:48,right:16,width:400,background:T.bg3,borderRadius:12,boxShadow:`0 20px 60px ${T.shadowHeavy}`,border:`1px solid ${T.border2}`,zIndex:100}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:16,borderBottom:`1px solid ${T.border1}`}}>
+      <h3 style={{fontWeight:700,fontSize:14,color:T.text0,margin:0}}>Notifications {active.length>0&&<span style={{fontSize:12,fontWeight:600,color:T.accent}}>({active.length})</span>}</h3>
+      <div style={{display:"flex",gap:8}}>
+        {active.length>0&&<button onClick={onDismissAll} style={{fontSize:11,color:T.text3,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Dismiss all</button>}
+        <button onClick={onClose} style={{cursor:"pointer",background:"none",border:"none",color:T.text2,padding:4}}><X size={16}/></button></div></div>
+    <div style={{maxHeight:400,overflow:"auto"}}>
+      {active.length?active.map(n=>
+        <div key={n.id} style={{padding:12,display:"flex",gap:12,alignItems:"flex-start",borderBottom:`1px solid ${T.border0}`}}>
+          <div style={{marginTop:2}}>{n.type==="deadline"&&<Clock size={16} color={n.urgent?T.amber:T.text2}/>}{n.type==="warning"&&<AlertTriangle size={16} color={T.red}/>}</div>
+          <button onClick={()=>onClickNotif(n)} style={{flex:1,textAlign:"left",background:"none",border:"none",cursor:"pointer",padding:0}}>
+            <div style={{fontSize:14,color:T.text1}}>{n.message}</div>
+            <div style={{fontSize:12,marginTop:4,color:T.text3}}>{fmtDate(n.date)}</div></button>
+          <button onClick={()=>onDismiss(n.id)} title="Dismiss" style={{background:"none",border:"none",cursor:"pointer",color:T.text3,padding:4,flexShrink:0}}
+            onMouseEnter={e=>e.currentTarget.style.color=T.green} onMouseLeave={e=>e.currentTarget.style.color=T.text3}>
+            <Check size={16}/></button></div>)
+      :<div style={{padding:24,textAlign:"center",fontSize:14,color:T.text3}}>All caught up!</div>}
+      {dismissedList.length>0&&<div style={{padding:"8px 16px",fontSize:11,color:T.text3,background:T.bg4,textAlign:"center"}}>{dismissedList.length} dismissed notification{dismissedList.length>1?"s":""}</div>}
+    </div></div>;}
 
 function ShipmentDetail({shipment,project,onBack,onToggleMilestone,onUpdate,rates}){const T=useT();
   const[tab,setTab]=useState("overview");
@@ -99,7 +119,8 @@ function ShipmentDetail({shipment,project,onBack,onToggleMilestone,onUpdate,rate
       <button onClick={onBack} style={{display:"flex",alignItems:"center",gap:4,fontSize:14,marginBottom:16,padding:"4px 8px",borderRadius:4,color:T.text2,background:"none",border:"none",cursor:"pointer"}}><ChevronLeft size={16}/> Back</button>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
         <div>
-          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}><MIcon mode={shipment.mode} size={22}/><h1 style={{fontSize:24,fontWeight:700,color:T.text0,fontFamily:mono,margin:0}}>{shipment.ref}</h1><Badge status={shipment.status}/></div>
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}><MIcon mode={shipment.mode} size={22}/>
+            <h1 style={{fontSize:24,fontWeight:700,color:T.text0,fontFamily:mono,margin:0}}>{shipment.ref||<span style={{color:T.text3,fontStyle:"italic"}}>Ref pending</span>}</h1><Badge status={shipment.status}/></div>
           {project&&<div style={{display:"flex",alignItems:"center",gap:8,fontSize:14,marginBottom:4}}><FolderOpen size={14} color={T.text2}/><span style={{color:T.text2}}>Project: <strong style={{color:T.text0}}>{project.name}</strong></span>{shipment.customerRef&&<span style={{color:T.text3}}>• {shipment.customerRef}</span>}</div>}
           <div style={{fontSize:14,marginTop:8,color:T.text1}}><strong>{shipment.origin}</strong> → <strong>{shipment.destination}</strong><span style={{margin:"0 8px",color:T.border2}}>|</span>{shipment.carrier} • {shipment.containerType}</div></div>
         <div style={{textAlign:"right"}}><div style={{fontSize:11,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:4,color:T.text2}}>Margin</div>
@@ -139,7 +160,7 @@ function KanbanView({shipments,projects,onSelect}){const T=useT(),SC=statusCfg(T
           return<button key={s.id} onClick={()=>onSelect(s.id)} style={{width:"100%",textAlign:"left",padding:12,borderRadius:12,marginBottom:8,background:T.bg2,border:`1px solid ${T.border1}`,cursor:"pointer",display:"block",transition:"all 0.15s"}}
             onMouseEnter={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow=`0 6px 20px ${T.shadow}`;}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border1;e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="none";}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,fontWeight:700,color:T.text1,fontFamily:"'JetBrains Mono',monospace"}}>{s.ref}</span><MIcon mode={s.mode} size={14}/></div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}><span style={{fontSize:12,fontWeight:700,color:T.text1,fontFamily:"'JetBrains Mono',monospace"}}>{s.ref||"Pending"}</span><MIcon mode={s.mode} size={14}/></div>
             {proj&&<div style={{fontSize:12,marginBottom:6,color:T.text2}}><span style={{fontWeight:600,color:T.text1}}>{proj.name}</span> • {s.customerRef}</div>}
             <div style={{fontSize:12,marginBottom:8,color:T.text2}}>{s.origin} → {s.destination}</div><PBar milestones={s.milestones||[]}/>
             {nm&&d!==null&&d<=5&&<div style={{marginTop:8,display:"flex",alignItems:"center",gap:6,fontSize:12,fontWeight:500,color:d<=2?T.red:T.amber}}><Clock size={12}/>{nm.label} {d===0?"today":d<0?`${Math.abs(d)}d ago`:`in ${d}d`}</div>}
@@ -174,7 +195,7 @@ function FinView({shipments,projects,rates}){const T=useT(),[groupBy,setGroupBy]
             <tbody>{group.shipments.map((s,i)=>{const f=calc(s),pct=f.quoted>0?(f.margin/f.quoted*100):0;
               return<tr key={s.id} style={{borderBottom:i<group.shipments.length-1?`1px solid ${T.border0}`:"none",background:T.bg2}}
                 onMouseEnter={e=>e.currentTarget.style.background=T.bg3} onMouseLeave={e=>e.currentTarget.style.background=T.bg2}>
-                <td style={{padding:"12px 16px"}}><div style={{fontSize:14,fontWeight:700,fontFamily:mono,color:T.text0}}>{s.ref}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</td>
+                <td style={{padding:"12px 16px"}}><div style={{fontSize:14,fontWeight:700,fontFamily:mono,color:T.text0}}>{s.ref||<span style={{color:T.text3}}>Pending</span>}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</td>
                 <td style={{padding:"12px 16px"}}><div style={{display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.text1}}><MIcon mode={s.mode} size={13}/>{s.origin} → {s.destination}</div></td>
                 <td style={{padding:"12px 16px"}}><Badge status={s.status}/></td>
                 <td style={{padding:"12px 16px",fontSize:14,fontWeight:500,fontFamily:mono,color:T.text1}}>{formatEUR(f.quoted)}</td>
@@ -188,7 +209,7 @@ function ShipRow({shipment:s,onClick}){const T=useT(),nm=(s.milestones||[]).find
     onMouseEnter={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.background=T.bg3;}}
     onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border0;e.currentTarget.style.background=T.bg2;}}>
     <div style={{width:34,height:34,borderRadius:9,background:T.bg4,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><MIcon mode={s.mode} size={17}/></div>
-    <div style={{width:140,flexShrink:0}}><div style={{fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:T.text0}}>{s.ref}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</div>
+    <div style={{width:140,flexShrink:0}}><div style={{fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:T.text0}}>{s.ref||<span style={{color:T.text3,fontWeight:400,fontStyle:"italic"}}>Pending</span>}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</div>
     <div style={{width:180,flexShrink:0}}><div style={{fontSize:14,color:T.text1}}>{s.origin} → {s.destination}</div><div style={{fontSize:12,color:T.text3}}>{s.carrier}</div></div>
     <div style={{width:120,flexShrink:0}}><div style={{fontSize:12,color:T.text2}}>{s.vessel&&s.vessel!=="TBD"&&s.vessel!=="—"?s.vessel.split(" ").slice(-1)[0]:"—"}</div><div style={{fontSize:12,color:T.text3}}>{s.routing&&s.routing.includes("→")?s.routing.split("→").length-1+" legs":"direct"}</div></div>
     <div style={{width:90,flexShrink:0}}><div style={{fontSize:12,fontWeight:500,color:T.text1}}>ETD {fmtDate(s.etd).replace(/\.\d{4}$/,"")}</div><div style={{fontSize:12,color:T.text3}}>ETA {fmtDate(s.eta).replace(/\.\d{4}$/,"")}</div></div>
@@ -205,6 +226,7 @@ export default function App(){
   const[notif,setNotif]=useState(false);
   const[q,setQ]=useState("");
   const[filt,setFilt]=useState("all");
+  const[sortBy,setSortBy]=useState(null);
   const[exp,setExp]=useState([]);
   const[showNewShipment,setShowNewShipment]=useState(false);
   const[showSettings,setShowSettings]=useState(false);
@@ -214,6 +236,7 @@ export default function App(){
   const[loading,setLoading]=useState(true);
   const[rates,setRates]=useState(FALLBACK_RATES);
   const[currentMode,setCurrentMode]=useState(getMode());
+  const[dismissed,setDismissedState]=useState(getDismissed());
 
   const loadData=useCallback(async()=>{
     try{await initDB();const[s,p]=await Promise.all([getShipments(),getProjects()]);setShipments(s);setProjects(p);setExp(p.map(pr=>pr.id));}
@@ -224,12 +247,21 @@ export default function App(){
   useEffect(()=>{fetchRates().then(setRates).catch(()=>{});},[]);
 
   const handleModeChange=(newMode)=>{setCurrentMode(newMode);setLoading(true);setSel(null);loadData();};
+  const handleDismiss=(id)=>{const next=[...dismissed,id];setDismissedState(next);setDismissed(next);};
+  const handleDismissAll=()=>{const ids=notifications.map(n=>n.id);const next=[...new Set([...dismissed,...ids])];setDismissedState(next);setDismissed(next);};
+  const handleClickNotif=(n)=>{handleDismiss(n.id);setSel(n.shipmentId);setNotif(false);};
 
   const notifications=useMemo(()=>generateNotifs(shipments),[shipments]);
+  const activeNotifCount=notifications.filter(n=>!dismissed.includes(n.id)&&n.urgent).length;
   const SC=statusCfg(T);
-  const filtered=useMemo(()=>{let r=shipments;if(filt!=="all")r=r.filter(s=>s.status===filt);if(q){const lq=q.toLowerCase();r=r.filter(s=>s.ref.toLowerCase().includes(lq)||(s.customerRef||"").toLowerCase().includes(lq)||s.origin.toLowerCase().includes(lq)||s.destination.toLowerCase().includes(lq)||s.carrier.toLowerCase().includes(lq)||projects.find(p=>p.id===s.projectId)?.name.toLowerCase().includes(lq));}return r;},[filt,q,shipments,projects]);
+  const filtered=useMemo(()=>{
+    let r=shipments;
+    if(filt!=="all")r=r.filter(s=>s.status===filt);
+    if(q){const lq=q.toLowerCase();r=r.filter(s=>(s.ref||"").toLowerCase().includes(lq)||(s.customerRef||"").toLowerCase().includes(lq)||s.origin.toLowerCase().includes(lq)||s.destination.toLowerCase().includes(lq)||s.carrier.toLowerCase().includes(lq)||projects.find(p=>p.id===s.projectId)?.name.toLowerCase().includes(lq));}
+    if(sortBy)r=sortShipments(r,sortBy);
+    return r;
+  },[filt,q,shipments,projects,sortBy]);
   const active=shipments.find(s=>s.id===sel),proj=active?projects.find(p=>p.id===active.projectId):null;
-  const urgCt=notifications.filter(n=>n.urgent).length;
   const navs=[{id:"dashboard",label:"Dashboard",icon:LayoutDashboard},{id:"kanban",label:"Board",icon:Columns3},{id:"financials",label:"Financials",icon:BarChart3}];
 
   const handleNewShipment=async()=>{const ref=await getNextRef();setNextRef(ref);setShowNewShipment(true);};
@@ -240,66 +272,45 @@ export default function App(){
     <div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div>
     <style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style></div>;
 
-  const isTest = currentMode === 'test';
+  const isTest=currentMode==="test";
 
   return<ThemeCtx.Provider value={T}>
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,sans-serif",background:T.bg1,color:T.text1,transition:"background 0.3s,color 0.3s"}}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-      {/* Sidebar */}
       <div style={{width:220,minWidth:220,background:"#0A0E17",display:"flex",flexDirection:"column",borderRight:"1px solid #1A2236"}}>
         <div style={{padding:"20px 20px 12px"}}><div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#2563EB,#60A5FA)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 20px rgba(59,130,246,0.3)"}}><Anchor size={18} color="white"/></div>
           <div><div style={{fontSize:14,fontWeight:700,color:"#F1F5F9"}}>CargoDesk</div><div style={{fontSize:12,color:"#4F5E78"}}>Logistics Manager</div></div></div></div>
-
-        {/* Mode indicator */}
         <div style={{margin:"4px 12px 8px",padding:"6px 10px",borderRadius:6,display:"flex",alignItems:"center",gap:6,
-          background:isTest?"rgba(245,158,11,0.1)":"rgba(16,185,129,0.1)",
-          border:`1px solid ${isTest?"rgba(245,158,11,0.2)":"rgba(16,185,129,0.2)"}`}}>
-          <div style={{width:7,height:7,borderRadius:"50%",background:isTest?"#F59E0B":"#10B981"}}/>
-          <span style={{fontSize:11,fontWeight:600,color:isTest?"#F59E0B":"#10B981",textTransform:"uppercase",letterSpacing:"0.05em"}}>{isTest?"Test Mode":"Production"}</span>
-        </div>
-
+          background:isTest?"rgba(245,158,11,0.1)":"rgba(16,185,129,0.1)",border:`1px solid ${isTest?"rgba(245,158,11,0.2)":"rgba(16,185,129,0.2)"}`}}>
+          <div style={{width:7,height:7,borderRadius:"50%",background:isTest?"#F59E0B":"#10B981"}}/><span style={{fontSize:11,fontWeight:600,color:isTest?"#F59E0B":"#10B981",textTransform:"uppercase",letterSpacing:"0.05em"}}>{isTest?"Test Mode":"Production"}</span></div>
         <nav style={{padding:"0 12px",marginTop:8,flex:1}}>{navs.map(n=><button key={n.id} onClick={()=>{setTab(n.id);setSel(null);}} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,background:tab===n.id?"rgba(59,130,246,0.12)":"transparent",color:tab===n.id?"#3B82F6":"#8494B0",border:"none",borderLeft:tab===n.id?"2px solid #3B82F6":"2px solid transparent",cursor:"pointer",textAlign:"left"}}>
           <n.icon size={18}/>{n.label}</button>)}</nav>
-
         <div style={{padding:16,margin:"0 12px 8px",borderRadius:12,background:"#161C2E",border:"1px solid #1A2236"}}>
           <div style={{fontSize:12,fontWeight:500,marginBottom:4,color:"#4F5E78"}}>Active Shipments</div>
           <div style={{fontSize:24,fontWeight:700,color:"#F1F5F9",fontFamily:"'JetBrains Mono',monospace"}}>{shipments.filter(s=>!["delivered","completed"].includes(s.status)).length}</div>
           <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginTop:4,color:"#3B82F6"}}><Ship size={12}/>{shipments.filter(s=>s.status==="in_transit").length} in transit</div></div>
-
-        {/* Settings button */}
-        <div style={{padding:"0 12px 4px"}}>
-          <button onClick={()=>setShowSettings(true)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.04)",cursor:"pointer",color:"#8494B0",fontSize:13,fontWeight:500}}>
-            <Settings size={16}/> Settings
-          </button>
-        </div>
-
-        <div style={{padding:"4px 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div>
-      </div>
-
-      {/* Main */}
+        <div style={{padding:"0 12px 4px"}}><button onClick={()=>setShowSettings(true)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.04)",cursor:"pointer",color:"#8494B0",fontSize:13,fontWeight:500}}><Settings size={16}/> Settings</button></div>
+        <div style={{padding:"4px 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div></div>
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-        {/* Test mode banner */}
         {isTest&&<div style={{padding:"6px 24px",background:"rgba(245,158,11,0.08)",borderBottom:"1px solid rgba(245,158,11,0.15)",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-          <AlertTriangle size={13} color="#F59E0B"/>
-          <span style={{fontSize:12,fontWeight:500,color:"#F59E0B"}}>Test Mode — using sample data. Switch to Production in Settings when ready.</span>
-        </div>}
-
-        {/* Top bar */}
+          <AlertTriangle size={13} color="#F59E0B"/><span style={{fontSize:12,fontWeight:500,color:"#F59E0B"}}>Test Mode — switch to Production in Settings when ready.</span></div>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px",background:T.bg2,borderBottom:`1px solid ${T.border1}`,minHeight:56,position:"relative"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flex:1}}>
             <div style={{position:"relative",maxWidth:360,flex:1}}><Search size={16} style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:T.text3}}/>
               <input type="text" placeholder="Search shipments, projects, carriers…" value={q} onChange={e=>setQ(e.target.value)}
                 style={{width:"100%",padding:"8px 16px 8px 40px",borderRadius:8,fontSize:14,border:`1px solid ${T.border1}`,outline:"none",background:T.bg3,color:T.text0}}/></div>
-            {tab==="dashboard"&&<div style={{display:"flex",gap:4,marginLeft:8,background:T.bg3,borderRadius:8,padding:3,border:`1px solid ${T.border0}`}}>
-              {["all","planned","booked","in_transit","delivered"].map(s=><button key={s} onClick={()=>setFilt(s)}
-                style={{padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:500,background:filt===s?T.bg4:"transparent",color:filt===s?T.text0:T.text3,border:"none",cursor:"pointer"}}>{s==="all"?"All":SC[s]?.label||s}</button>)}</div>}</div>
+            {tab==="dashboard"&&<>
+              <div style={{display:"flex",gap:4,marginLeft:8,background:T.bg3,borderRadius:8,padding:3,border:`1px solid ${T.border0}`}}>
+                {["all","planned","booked","in_transit","delivered"].map(s=><button key={s} onClick={()=>setFilt(s)}
+                  style={{padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:500,background:filt===s?T.bg4:"transparent",color:filt===s?T.text0:T.text3,border:"none",cursor:"pointer"}}>{s==="all"?"All":SC[s]?.label||s}</button>)}</div>
+              <SortFilterBar T={T} sortBy={sortBy} onSortChange={setSortBy}/>
+            </>}</div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:16}}>
             <button onClick={()=>setNotif(!notif)} style={{position:"relative",padding:8,borderRadius:8,color:T.text2,background:"none",border:"none",cursor:"pointer"}}>
-              <Bell size={20}/>{urgCt>0&&<span style={{position:"absolute",top:4,right:4,width:16,height:16,borderRadius:"50%",background:T.red,color:"white",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{urgCt}</span>}</button>
+              <Bell size={20}/>{activeNotifCount>0&&<span style={{position:"absolute",top:4,right:4,width:16,height:16,borderRadius:"50%",background:T.red,color:"white",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{activeNotifCount}</span>}</button>
             <button onClick={handleNewShipment} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,fontSize:14,fontWeight:500,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}><Plus size={16}/> New Shipment</button></div>
-          {notif&&<NotifPanel notifications={notifications} onClose={()=>setNotif(false)}/>}</div>
-
+          {notif&&<NotifPanel notifications={notifications} dismissed={dismissed} onDismiss={handleDismiss} onDismissAll={handleDismissAll} onClose={()=>setNotif(false)} onClickNotif={handleClickNotif}/>}</div>
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
           {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail shipment={active} project={proj} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone} onUpdate={loadData} rates={rates}/></div>
             :tab==="kanban"?<KanbanView shipments={filtered} projects={projects} onSelect={setSel}/>
