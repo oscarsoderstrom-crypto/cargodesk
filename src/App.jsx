@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
-import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw } from "lucide-react";
-import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB } from "./db/schema.js";
+import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings } from "lucide-react";
+import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB, getMode } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import DocumentsTab from "./components/DocumentsTab.jsx";
 import CostsTab from "./components/CostsTab.jsx";
+import SettingsPanel from "./components/SettingsPanel.jsx";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
 
 const DARK = {
@@ -95,7 +96,7 @@ function ShipmentDetail({shipment,project,onBack,onToggleMilestone,onUpdate,rate
 
   return<div style={{height:"100%",overflow:"auto",background:T.bg1}}>
     <div style={{padding:24,borderBottom:`1px solid ${T.border1}`,background:`linear-gradient(180deg,${T.bg2} 0%,${T.bg1} 100%)`}}>
-      <button onClick={onBack} style={{display:"flex",alignItems:"center",gap:4,fontSize:14,marginBottom:16,padding:"4px 8px",borderRadius:4,color:T.text2,background:"none",border:"none",cursor:"pointer"}}><ChevronLeft size={16}/> Back to Dashboard</button>
+      <button onClick={onBack} style={{display:"flex",alignItems:"center",gap:4,fontSize:14,marginBottom:16,padding:"4px 8px",borderRadius:4,color:T.text2,background:"none",border:"none",cursor:"pointer"}}><ChevronLeft size={16}/> Back</button>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
         <div>
           <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8}}><MIcon mode={shipment.mode} size={22}/><h1 style={{fontSize:24,fontWeight:700,color:T.text0,fontFamily:mono,margin:0}}>{shipment.ref}</h1><Badge status={shipment.status}/></div>
@@ -206,11 +207,13 @@ export default function App(){
   const[filt,setFilt]=useState("all");
   const[exp,setExp]=useState([]);
   const[showNewShipment,setShowNewShipment]=useState(false);
+  const[showSettings,setShowSettings]=useState(false);
   const[nextRef,setNextRef]=useState("");
   const[shipments,setShipments]=useState([]);
   const[projects,setProjects]=useState([]);
   const[loading,setLoading]=useState(true);
   const[rates,setRates]=useState(FALLBACK_RATES);
+  const[currentMode,setCurrentMode]=useState(getMode());
 
   const loadData=useCallback(async()=>{
     try{await initDB();const[s,p]=await Promise.all([getShipments(),getProjects()]);setShipments(s);setProjects(p);setExp(p.map(pr=>pr.id));}
@@ -219,6 +222,8 @@ export default function App(){
 
   useEffect(()=>{loadData();},[loadData]);
   useEffect(()=>{fetchRates().then(setRates).catch(()=>{});},[]);
+
+  const handleModeChange=(newMode)=>{setCurrentMode(newMode);setLoading(true);setSel(null);loadData();};
 
   const notifications=useMemo(()=>generateNotifs(shipments),[shipments]);
   const SC=statusCfg(T);
@@ -235,21 +240,52 @@ export default function App(){
     <div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div>
     <style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style></div>;
 
+  const isTest = currentMode === 'test';
+
   return<ThemeCtx.Provider value={T}>
     <div style={{display:"flex",height:"100vh",fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,sans-serif",background:T.bg1,color:T.text1,transition:"background 0.3s,color 0.3s"}}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+      {/* Sidebar */}
       <div style={{width:220,minWidth:220,background:"#0A0E17",display:"flex",flexDirection:"column",borderRight:"1px solid #1A2236"}}>
         <div style={{padding:"20px 20px 12px"}}><div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:34,height:34,borderRadius:9,background:"linear-gradient(135deg,#2563EB,#60A5FA)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 0 20px rgba(59,130,246,0.3)"}}><Anchor size={18} color="white"/></div>
           <div><div style={{fontSize:14,fontWeight:700,color:"#F1F5F9"}}>CargoDesk</div><div style={{fontSize:12,color:"#4F5E78"}}>Logistics Manager</div></div></div></div>
-        <nav style={{padding:"0 12px",marginTop:16,flex:1}}>{navs.map(n=><button key={n.id} onClick={()=>{setTab(n.id);setSel(null);}} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,background:tab===n.id?"rgba(59,130,246,0.12)":"transparent",color:tab===n.id?"#3B82F6":"#8494B0",border:"none",borderLeft:tab===n.id?"2px solid #3B82F6":"2px solid transparent",cursor:"pointer",textAlign:"left"}}>
+
+        {/* Mode indicator */}
+        <div style={{margin:"4px 12px 8px",padding:"6px 10px",borderRadius:6,display:"flex",alignItems:"center",gap:6,
+          background:isTest?"rgba(245,158,11,0.1)":"rgba(16,185,129,0.1)",
+          border:`1px solid ${isTest?"rgba(245,158,11,0.2)":"rgba(16,185,129,0.2)"}`}}>
+          <div style={{width:7,height:7,borderRadius:"50%",background:isTest?"#F59E0B":"#10B981"}}/>
+          <span style={{fontSize:11,fontWeight:600,color:isTest?"#F59E0B":"#10B981",textTransform:"uppercase",letterSpacing:"0.05em"}}>{isTest?"Test Mode":"Production"}</span>
+        </div>
+
+        <nav style={{padding:"0 12px",marginTop:8,flex:1}}>{navs.map(n=><button key={n.id} onClick={()=>{setTab(n.id);setSel(null);}} style={{width:"100%",display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,background:tab===n.id?"rgba(59,130,246,0.12)":"transparent",color:tab===n.id?"#3B82F6":"#8494B0",border:"none",borderLeft:tab===n.id?"2px solid #3B82F6":"2px solid transparent",cursor:"pointer",textAlign:"left"}}>
           <n.icon size={18}/>{n.label}</button>)}</nav>
+
         <div style={{padding:16,margin:"0 12px 8px",borderRadius:12,background:"#161C2E",border:"1px solid #1A2236"}}>
           <div style={{fontSize:12,fontWeight:500,marginBottom:4,color:"#4F5E78"}}>Active Shipments</div>
           <div style={{fontSize:24,fontWeight:700,color:"#F1F5F9",fontFamily:"'JetBrains Mono',monospace"}}>{shipments.filter(s=>!["delivered","completed"].includes(s.status)).length}</div>
           <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginTop:4,color:"#3B82F6"}}><Ship size={12}/>{shipments.filter(s=>s.status==="in_transit").length} in transit</div></div>
-        <div style={{padding:"0 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div></div>
+
+        {/* Settings button */}
+        <div style={{padding:"0 12px 4px"}}>
+          <button onClick={()=>setShowSettings(true)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.04)",cursor:"pointer",color:"#8494B0",fontSize:13,fontWeight:500}}>
+            <Settings size={16}/> Settings
+          </button>
+        </div>
+
+        <div style={{padding:"4px 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div>
+      </div>
+
+      {/* Main */}
       <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        {/* Test mode banner */}
+        {isTest&&<div style={{padding:"6px 24px",background:"rgba(245,158,11,0.08)",borderBottom:"1px solid rgba(245,158,11,0.15)",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          <AlertTriangle size={13} color="#F59E0B"/>
+          <span style={{fontSize:12,fontWeight:500,color:"#F59E0B"}}>Test Mode — using sample data. Switch to Production in Settings when ready.</span>
+        </div>}
+
+        {/* Top bar */}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px",background:T.bg2,borderBottom:`1px solid ${T.border1}`,minHeight:56,position:"relative"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flex:1}}>
             <div style={{position:"relative",maxWidth:360,flex:1}}><Search size={16} style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:T.text3}}/>
@@ -263,6 +299,7 @@ export default function App(){
               <Bell size={20}/>{urgCt>0&&<span style={{position:"absolute",top:4,right:4,width:16,height:16,borderRadius:"50%",background:T.red,color:"white",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{urgCt}</span>}</button>
             <button onClick={handleNewShipment} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,fontSize:14,fontWeight:500,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}><Plus size={16}/> New Shipment</button></div>
           {notif&&<NotifPanel notifications={notifications} onClose={()=>setNotif(false)}/>}</div>
+
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
           {sel&&active?<div style={{flex:1,overflow:"hidden"}}><ShipmentDetail shipment={active} project={proj} onBack={()=>setSel(null)} onToggleMilestone={handleToggleMilestone} onUpdate={loadData} rates={rates}/></div>
             :tab==="kanban"?<KanbanView shipments={filtered} projects={projects} onSelect={setSel}/>
@@ -282,4 +319,5 @@ export default function App(){
                   {filtered.filter(s=>!s.projectId).map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)}/>)}</div>}</div>
               <DeadlineSidebar shipments={shipments} onSelect={setSel}/></>}</div></div>
       {showNewShipment&&<NewShipmentModal T={T} projects={projects} nextRef={nextRef} onSave={handleSaveShipment} onClose={()=>setShowNewShipment(false)}/>}
+      {showSettings&&<SettingsPanel T={T} onClose={()=>setShowSettings(false)} onModeChange={handleModeChange} onDataChange={loadData}/>}
     </div></ThemeCtx.Provider>;}

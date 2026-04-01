@@ -1,14 +1,54 @@
 import Dexie from 'dexie';
 
-const db = new Dexie('CargoDesk');
+/**
+ * Database mode manager.
+ * Maintains two completely separate IndexedDB databases:
+ * - "CargoDesk" for production
+ * - "CargoDesk_test" for testing
+ *
+ * Mode is stored in localStorage so it persists across sessions.
+ */
 
-db.version(2).stores({
-  projects: 'id, name, customer, status',
-  shipments: 'id, ref, projectId, customerRef, mode, status, origin, destination, carrier, etd, eta',
-  documents: 'id, shipmentId, name, type, date, quoteNumber, bookingNumber',
-});
+const MODE_KEY = 'cargodesk_mode';
 
-// ---------- SEED DATA ----------
+// ---- MODE MANAGEMENT ----
+
+export function getMode() {
+  try {
+    return localStorage.getItem(MODE_KEY) || 'test';
+  } catch {
+    return 'test';
+  }
+}
+
+export function setMode(mode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {}
+}
+
+// ---- DATABASE INSTANCES ----
+
+function createDB(name) {
+  const db = new Dexie(name);
+  db.version(2).stores({
+    projects: 'id, name, customer, status',
+    shipments: 'id, ref, projectId, customerRef, mode, status, origin, destination, carrier, etd, eta',
+    documents: 'id, shipmentId, name, type, date, quoteNumber, bookingNumber',
+  });
+  return db;
+}
+
+const databases = {
+  production: createDB('CargoDesk'),
+  test: createDB('CargoDesk_test'),
+};
+
+export function getDB() {
+  return databases[getMode()] || databases.test;
+}
+
+// ---- SEED DATA (test mode only) ----
 
 const SEED_PROJECTS = [
   { id: "p1", name: "USGOLD", customer: "US Gold Mining Corp", status: "active" },
@@ -37,34 +77,33 @@ const SEED_SHIPMENTS = [
       running:[{id:"r1",desc:"Waiting time at origin",dailyRate:450,currency:"EUR",startDate:"2026-03-28",status:"stopped",endDate:"2026-03-29",totalDays:1}]}},
 ];
 
-// ---------- DATABASE OPERATIONS ----------
+// ---- DATABASE OPERATIONS ----
 
 export async function initDB() {
+  const db = getDB();
   const count = await db.shipments.count();
-  if (count === 0) {
+  if (count === 0 && getMode() === 'test') {
     await db.projects.bulkAdd(SEED_PROJECTS);
     await db.shipments.bulkAdd(SEED_SHIPMENTS);
   }
 }
 
-// -- Projects --
-export async function getProjects() { return db.projects.toArray(); }
-export async function addProject(project) { return db.projects.add(project); }
-export async function updateProject(id, changes) { return db.projects.update(id, changes); }
-export async function deleteProject(id) { return db.projects.delete(id); }
+export async function getProjects() { return getDB().projects.toArray(); }
+export async function addProject(project) { return getDB().projects.add(project); }
+export async function updateProject(id, changes) { return getDB().projects.update(id, changes); }
+export async function deleteProject(id) { return getDB().projects.delete(id); }
 
-// -- Shipments --
-export async function getShipments() { return db.shipments.toArray(); }
-export async function getShipment(id) { return db.shipments.get(id); }
-export async function addShipment(shipment) { return db.shipments.add(shipment); }
-export async function updateShipment(id, changes) { return db.shipments.update(id, changes); }
+export async function getShipments() { return getDB().shipments.toArray(); }
+export async function getShipment(id) { return getDB().shipments.get(id); }
+export async function addShipment(shipment) { return getDB().shipments.add(shipment); }
+export async function updateShipment(id, changes) { return getDB().shipments.update(id, changes); }
 export async function deleteShipment(id) {
-  await db.documents.where('shipmentId').equals(id).delete();
-  return db.shipments.delete(id);
+  await getDB().documents.where('shipmentId').equals(id).delete();
+  return getDB().shipments.delete(id);
 }
 
 export async function getNextRef() {
-  const all = await db.shipments.toArray();
+  const all = await getDB().shipments.toArray();
   const year = new Date().getFullYear().toString().slice(2);
   let maxNum = 0;
   all.forEach(s => {
@@ -78,6 +117,7 @@ export async function getNextRef() {
 }
 
 export async function toggleMilestone(shipmentId, milestoneId) {
+  const db = getDB();
   const shipment = await db.shipments.get(shipmentId);
   if (!shipment) return;
   const milestones = shipment.milestones.map(m =>
@@ -87,46 +127,138 @@ export async function toggleMilestone(shipmentId, milestoneId) {
 }
 
 export async function addCostItem(shipmentId, costItem) {
+  const db = getDB();
   const shipment = await db.shipments.get(shipmentId);
   if (!shipment) return;
   const items = [...shipment.costs.items, costItem];
   return db.shipments.update(shipmentId, { costs: { ...shipment.costs, items } });
 }
 
-export async function updateQuotedAmount(shipmentId, amount) {
-  const shipment = await db.shipments.get(shipmentId);
-  if (!shipment) return;
-  return db.shipments.update(shipmentId, { costs: { ...shipment.costs, quoted: amount } });
+export async function getDocuments(shipmentId) { return getDB().documents.where('shipmentId').equals(shipmentId).toArray(); }
+export async function getAllDocuments() { return getDB().documents.toArray(); }
+export async function addDocument(doc) { return getDB().documents.add(doc); }
+export async function deleteDocument(id) { return getDB().documents.delete(id); }
+
+// ---- BACKUP / EXPORT / IMPORT ----
+
+/**
+ * Export all data as an encrypted JSON string.
+ * Uses AES-GCM with a password-derived key.
+ */
+export async function exportData(password) {
+  const db = getDB();
+  const data = {
+    version: 2,
+    mode: getMode(),
+    exportedAt: new Date().toISOString(),
+    projects: await db.projects.toArray(),
+    shipments: await db.shipments.toArray(),
+    documents: (await db.documents.toArray()).map(d => ({
+      ...d,
+      base64Data: undefined, // Exclude file data from backup to keep size manageable
+    })),
+  };
+
+  const json = JSON.stringify(data);
+
+  if (!password) {
+    return json; // Unencrypted export
+  }
+
+  // Encrypt with AES-GCM
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt']
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(json));
+
+  // Pack salt + iv + ciphertext as base64
+  const packed = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+  packed.set(salt, 0);
+  packed.set(iv, salt.length);
+  packed.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+  return btoa(String.fromCharCode(...packed));
 }
 
-// -- Documents --
-export async function getDocuments(shipmentId) {
-  return db.documents.where('shipmentId').equals(shipmentId).toArray();
+/**
+ * Import data from an exported string (encrypted or plain JSON).
+ */
+export async function importData(input, password) {
+  let data;
+
+  try {
+    // Try parsing as plain JSON first
+    data = JSON.parse(input);
+  } catch {
+    // Must be encrypted
+    if (!password) throw new Error('This backup is encrypted. Please provide a password.');
+
+    const packed = Uint8Array.from(atob(input), c => c.charCodeAt(0));
+    const salt = packed.slice(0, 16);
+    const iv = packed.slice(16, 28);
+    const ciphertext = packed.slice(28);
+
+    const enc = new TextEncoder();
+    const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+
+    try {
+      const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+      data = JSON.parse(new TextDecoder().decode(decrypted));
+    } catch {
+      throw new Error('Wrong password or corrupted backup.');
+    }
+  }
+
+  // Validate
+  if (!data.projects || !data.shipments) {
+    throw new Error('Invalid backup file format.');
+  }
+
+  // Import into current database
+  const db = getDB();
+  await db.projects.clear();
+  await db.shipments.clear();
+  await db.documents.clear();
+
+  if (data.projects.length) await db.projects.bulkAdd(data.projects);
+  if (data.shipments.length) await db.shipments.bulkAdd(data.shipments);
+  if (data.documents?.length) await db.documents.bulkAdd(data.documents);
+
+  return {
+    projects: data.projects.length,
+    shipments: data.shipments.length,
+    documents: data.documents?.length || 0,
+  };
 }
 
-export async function getAllDocuments() {
-  return db.documents.toArray();
-}
-
-export async function addDocument(doc) {
-  return db.documents.add(doc);
-}
-
-export async function deleteDocument(id) {
-  return db.documents.delete(id);
-}
-
-export async function getDocumentsByQuoteNumber(quoteNumber) {
-  return db.documents.where('quoteNumber').equals(quoteNumber).toArray();
-}
-
-// -- Reset (development) --
+/**
+ * Reset the current database (clears all data).
+ * In test mode, re-seeds with sample data.
+ */
 export async function resetDB() {
+  const db = getDB();
   await db.shipments.clear();
   await db.projects.clear();
   await db.documents.clear();
-  await db.projects.bulkAdd(SEED_PROJECTS);
-  await db.shipments.bulkAdd(SEED_SHIPMENTS);
+  if (getMode() === 'test') {
+    await db.projects.bulkAdd(SEED_PROJECTS);
+    await db.shipments.bulkAdd(SEED_SHIPMENTS);
+  }
 }
 
-export default db;
+export default getDB;
