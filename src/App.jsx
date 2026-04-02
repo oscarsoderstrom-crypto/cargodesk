@@ -1,10 +1,14 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
 import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, Upload, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check } from "lucide-react";
-import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB, getMode } from "./db/schema.js";
+import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, resetDB, getMode, addDocument } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import ShipmentDetail from "./components/ShipmentDetail.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import SortFilterBar, { sortShipments } from "./components/SortFilterBar.jsx";
+import ShipmentContextMenu from "./components/ShipmentContextMenu.jsx";
+import StatusSummary from "./components/StatusSummary.jsx";
+import { extractTextFromPDF, fileToBase64 } from "./parsers/pdfParser.js";
+import { parseDocumentText } from "./parsers/carrierParsers.js";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
 
 const DARK = {
@@ -158,10 +162,15 @@ function FinView({shipments,projects,rates}){const T=useT(),[groupBy,setGroupBy]
                 <td style={{padding:"12px 16px"}}>{(s.costs?.running||[]).some(r=>r.status==="running")&&<span style={{display:"flex",alignItems:"center",gap:4,fontSize:11,fontWeight:700,color:T.red}}>RUNNING</span>}</td>
               </tr>;})}</tbody></table></div></div>;})}</div>;}
 
-function ShipRow({shipment:s,onClick}){const T=useT(),nm=(s.milestones||[]).find(m=>!m.done&&m.date),d=nm?daysUntil(nm.date):null;
-  return<button onClick={onClick} style={{width:"100%",display:"flex",alignItems:"center",gap:16,padding:"12px 16px",borderRadius:12,marginBottom:4,textAlign:"left",background:T.bg2,border:`1px solid ${T.border0}`,cursor:"pointer",transition:"all 0.15s"}}
-    onMouseEnter={e=>{e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.background=T.bg3;}}
-    onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border0;e.currentTarget.style.background=T.bg2;}}>
+function ShipRow({shipment:s,onClick,onContextMenu,onDrop}){const T=useT(),nm=(s.milestones||[]).find(m=>!m.done&&m.date),d=nm?daysUntil(nm.date):null;
+  const[dragOver,setDragOver]=useState(false);
+  return<button onClick={onClick} onContextMenu={e=>onContextMenu&&onContextMenu(e,s)}
+    onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOver(true);}}
+    onDragLeave={()=>setDragOver(false)}
+    onDrop={e=>{e.preventDefault();e.stopPropagation();setDragOver(false);const files=Array.from(e.dataTransfer.files);if(files.length&&onDrop)onDrop(s.id,files);}}
+    style={{width:"100%",display:"flex",alignItems:"center",gap:16,padding:"12px 16px",borderRadius:12,marginBottom:4,textAlign:"left",background:dragOver?T.accentGlow:T.bg2,border:`1px solid ${dragOver?T.accent:T.border0}`,cursor:"pointer",transition:"all 0.15s"}}
+    onMouseEnter={e=>{if(!dragOver){e.currentTarget.style.borderColor=T.border2;e.currentTarget.style.background=T.bg3;}}}
+    onMouseLeave={e=>{if(!dragOver){e.currentTarget.style.borderColor=T.border0;e.currentTarget.style.background=T.bg2;}}}>
     <div style={{width:34,height:34,borderRadius:9,background:T.bg4,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><MIcon mode={s.mode} size={17}/></div>
     <div style={{width:140,flexShrink:0}}><div style={{fontSize:14,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",color:T.text0}}>{s.ref||<span style={{color:T.text3,fontWeight:400,fontStyle:"italic"}}>Pending</span>}</div>{s.customerRef&&<div style={{fontSize:12,color:T.text3}}>{s.customerRef}</div>}</div>
     <div style={{width:180,flexShrink:0}}><div style={{fontSize:14,color:T.text1}}>{s.origin} → {s.destination}</div><div style={{fontSize:12,color:T.text3}}>{s.carrier}</div></div>
@@ -169,7 +178,7 @@ function ShipRow({shipment:s,onClick}){const T=useT(),nm=(s.milestones||[]).find
     <div style={{width:90,flexShrink:0}}><div style={{fontSize:12,fontWeight:500,color:T.text1}}>ETD {fmtDate(s.etd).replace(/\.\d{4}$/,"")}</div><div style={{fontSize:12,color:T.text3}}>ETA {fmtDate(s.eta).replace(/\.\d{4}$/,"")}</div></div>
     <div style={{width:90,flexShrink:0}}><Badge status={s.status}/></div>
     <div style={{width:120,flexShrink:0}}><PBar milestones={s.milestones||[]}/></div>
-    <div style={{flex:1,textAlign:"right"}}>{nm&&d!==null&&d<=5&&<span style={{fontSize:12,fontWeight:600,padding:"4px 8px",borderRadius:6,background:d<=1?T.redBg:d<=3?T.amberBg:T.accentGlow,color:d<=1?T.red:d<=3?T.amber:T.accent,border:`1px solid ${d<=1?T.redBorder:d<=3?T.amberBorder:"rgba(59,130,246,0.2)"}`}}>{nm.label}: {d===0?"Today":d<0?`${Math.abs(d)}d ago`:`${d}d`}</span>}</div>
+    <div style={{flex:1,textAlign:"right"}}>{dragOver?<span style={{fontSize:12,fontWeight:600,color:T.accent}}>Drop PDF here</span>:nm&&d!==null&&d<=5&&<span style={{fontSize:12,fontWeight:600,padding:"4px 8px",borderRadius:6,background:d<=1?T.redBg:d<=3?T.amberBg:T.accentGlow,color:d<=1?T.red:d<=3?T.amber:T.accent,border:`1px solid ${d<=1?T.redBorder:d<=3?T.amberBorder:"rgba(59,130,246,0.2)"}`}}>{nm.label}: {d===0?"Today":d<0?`${Math.abs(d)}d ago`:`${d}d`}</span>}</div>
   </button>;}
 
 export default function App(){
@@ -191,6 +200,7 @@ export default function App(){
   const[rates,setRates]=useState(FALLBACK_RATES);
   const[currentMode,setCurrentMode]=useState(getMode());
   const[dismissed,setDismissedState]=useState(getDismissed());
+  const[contextMenu,setContextMenu]=useState(null);
 
   const loadData=useCallback(async()=>{
     try{await initDB();const[s,p]=await Promise.all([getShipments(),getProjects()]);setShipments(s);setProjects(p);setExp(p.map(pr=>pr.id));}
@@ -221,6 +231,11 @@ export default function App(){
   const handleNewShipment=async()=>{const ref=await getNextRef();setNextRef(ref);setShowNewShipment(true);};
   const handleSaveShipment=async(shipment,newProject)=>{try{if(newProject)await addProject(newProject);await addShipment(shipment);setShowNewShipment(false);await loadData();setSel(shipment.id);}catch(err){console.error("Failed to save:",err);}};
   const handleToggleMilestone=async(sid,mid)=>{await dbToggleMilestone(sid,mid);await loadData();};
+  const handleStatusChange=async(sid,newStatus)=>{await updateShipment(sid,{status:newStatus});await loadData();};
+  const handleDeleteShipment=async(sid)=>{await deleteShipment(sid);if(sel===sid)setSel(null);await loadData();};
+  const handleDuplicate=async(s)=>{const ref=await getNextRef();const dup={...s,id:crypto.randomUUID(),ref:"",refPending:true,status:"planned",milestones:(s.milestones||[]).map(m=>({...m,id:`m${Date.now()}${Math.random()}`,done:false})),costs:{...s.costs,items:[...s.costs.items.map(c=>({...c,id:crypto.randomUUID()}))],running:[]},notes:[]};await addShipment(dup);await loadData();setSel(dup.id);};
+  const handleDropOnRow=async(shipmentId,files)=>{for(const file of files){if(!file.type.includes("pdf")&&!file.name.endsWith(".pdf"))continue;try{const extracted=await extractTextFromPDF(file);const parsed=parseDocumentText(extracted.text,file.name);const base64=await fileToBase64(file);const doc={id:crypto.randomUUID(),shipmentId,name:file.name,type:parsed.documentType,date:new Date().toISOString().split("T")[0],size:file.size,base64Data:base64,parsedData:parsed,quoteNumber:parsed.quoteNumber||null,bookingNumber:parsed.bookingNumber||null,rawText:extracted.text.slice(0,5000)};await addDocument(doc);}catch(err){console.error("Drop failed:",err);}}await loadData();};
+  const handleContextMenu=(e,s)=>{e.preventDefault();setContextMenu({x:e.clientX,y:e.clientY,shipment:s});};
 
   if(loading)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg1}}>
     <div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div>
@@ -271,6 +286,7 @@ export default function App(){
             :tab==="financials"?<FinView shipments={shipments} projects={projects} rates={rates}/>
             :<>
               <div style={{flex:1,overflow:"auto",padding:24}}>
+                <StatusSummary T={T} shipments={shipments} statusCfg={SC} onFilterClick={setFilt}/>
                 {projects.map(p=>{const ps=filtered.filter(s=>s.projectId===p.id);if(!ps.length)return null;const isExp=exp.includes(p.id);
                   return<div key={p.id} style={{marginBottom:16}}>
                     <button onClick={()=>setExp(prev=>prev.includes(p.id)?prev.filter(x=>x!==p.id):[...prev,p.id])} style={{display:"flex",alignItems:"center",gap:8,width:"100%",textAlign:"left",padding:"8px 12px",borderRadius:8,color:T.text1,background:"none",border:"none",cursor:"pointer"}}
@@ -278,11 +294,12 @@ export default function App(){
                       {isExp?<ChevronDown size={16} color={T.text2}/>:<ChevronRight size={16} color={T.text2}/>}
                       <FolderOpen size={16} color={T.accent}/><span style={{fontWeight:700,fontSize:14,color:T.text0}}>{p.name}</span>
                       <span style={{fontSize:12,color:T.text2}}>{p.customer} • {ps.length} shipments</span></button>
-                    {isExp&&<div style={{marginTop:4}}>{ps.map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)}/>)}</div>}</div>;})}
+                    {isExp&&<div style={{marginTop:4}}>{ps.map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)} onContextMenu={handleContextMenu} onDrop={handleDropOnRow}/>)}</div>}</div>;})}
                 {filtered.filter(s=>!s.projectId).length>0&&<div style={{marginBottom:16}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px"}}><Package size={16} color={T.text2}/><span style={{fontWeight:700,fontSize:14,color:T.text0}}>Loose Shipments</span></div>
-                  {filtered.filter(s=>!s.projectId).map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)}/>)}</div>}</div>
+                  {filtered.filter(s=>!s.projectId).map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)} onContextMenu={handleContextMenu} onDrop={handleDropOnRow}/>)}</div>}</div>
               <DeadlineSidebar shipments={shipments} onSelect={setSel}/></>}</div></div>
       {showNewShipment&&<NewShipmentModal T={T} projects={projects} nextRef={nextRef} onSave={handleSaveShipment} onClose={()=>setShowNewShipment(false)}/>}
       {showSettings&&<SettingsPanel T={T} onClose={()=>setShowSettings(false)} onModeChange={handleModeChange} onDataChange={loadData}/>}
+      {contextMenu&&<ShipmentContextMenu T={T} x={contextMenu.x} y={contextMenu.y} shipment={contextMenu.shipment} onClose={()=>setContextMenu(null)} onStatusChange={handleStatusChange} onDelete={handleDeleteShipment} onDuplicate={handleDuplicate}/>}
     </div></ThemeCtx.Provider>;}
