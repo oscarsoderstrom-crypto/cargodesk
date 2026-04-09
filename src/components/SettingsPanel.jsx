@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw } from "lucide-react";
+import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation } from "lucide-react";
 import { exportData, importData, resetDB, getMode, setMode } from "../db/schema.js";
+import { getWorkerUrl, setWorkerUrl } from "../utils/tracking.js";
 
 export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }) {
   const [activeSection, setActiveSection] = useState("mode");
@@ -10,6 +11,8 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
   const [message, setMessage] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [workerUrlInput, setWorkerUrlInput] = useState(getWorkerUrl());
+  const [workerTestResult, setWorkerTestResult] = useState(null);
 
   const currentMode = getMode();
 
@@ -87,8 +90,42 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
     }
   };
 
+  const handleSaveWorkerUrl = () => {
+    const url = workerUrlInput.trim().replace(/\/$/, '');
+    setWorkerUrl(url);
+    if (url) {
+      showMessage('success', 'Tracking worker URL saved.');
+    } else {
+      showMessage('success', 'Tracking worker URL cleared.');
+    }
+  };
+
+  const handleTestWorker = async () => {
+    const url = workerUrlInput.trim().replace(/\/$/, '');
+    if (!url) { setWorkerTestResult({ ok: false, text: 'Enter a URL first.' }); return; }
+    setWorkerTestResult({ ok: null, text: 'Testing...' });
+    try {
+      const resp = await fetch(url + '/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ carrier: 'test', bookingNumber: 'TEST123' }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.error && data.error.includes('not supported')) {
+        setWorkerTestResult({ ok: true, text: 'Worker is reachable and responding correctly.' });
+      } else if (resp.ok) {
+        setWorkerTestResult({ ok: true, text: 'Worker responded.' });
+      } else {
+        setWorkerTestResult({ ok: false, text: `Worker returned HTTP ${resp.status}.` });
+      }
+    } catch (err) {
+      setWorkerTestResult({ ok: false, text: `Could not reach worker: ${err.message}` });
+    }
+  };
+
   const sections = [
     { id: "mode", label: "Mode" },
+    { id: "tracking", label: "Tracking" },
     { id: "backup", label: "Backup" },
     { id: "restore", label: "Restore" },
     { id: "danger", label: "Reset" },
@@ -106,7 +143,7 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
         </div>
 
         {/* Tab navigation */}
-        <div style={{ display: "flex", gap: 4, padding: "12px 24px", borderBottom: `1px solid ${T.border0}` }}>
+        <div style={{ display: "flex", gap: 4, padding: "12px 24px", borderBottom: `1px solid ${T.border0}`, flexWrap: "wrap" }}>
           {sections.map(s => (
             <button key={s.id} onClick={() => setActiveSection(s.id)}
               style={{
@@ -139,7 +176,6 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                {/* Test Mode Card */}
                 <button onClick={() => handleModeSwitch('test')}
                   style={{
                     padding: 20, borderRadius: 12, textAlign: "left", cursor: "pointer",
@@ -155,13 +191,10 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
                     Pre-loaded sample data. Safe to experiment — your real data is untouched.
                   </div>
                   {currentMode === 'test' && (
-                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.amber }}>
-                      ✓ Currently active
-                    </div>
+                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.amber }}>✓ Currently active</div>
                   )}
                 </button>
 
-                {/* Production Mode Card */}
                 <button onClick={() => handleModeSwitch('production')}
                   style={{
                     padding: 20, borderRadius: 12, textAlign: "left", cursor: "pointer",
@@ -177,15 +210,93 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
                     Your real data. Starts empty — create your actual projects and shipments here.
                   </div>
                   {currentMode === 'production' && (
-                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.green }}>
-                      ✓ Currently active
-                    </div>
+                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.green }}>✓ Currently active</div>
                   )}
                 </button>
               </div>
 
               <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border0}`, fontSize: 12, color: T.text3, lineHeight: 1.5 }}>
                 <strong style={{ color: T.text2 }}>How it works:</strong> Each mode uses a separate database. Switching modes instantly loads the other database. No data is shared or lost when switching.
+              </div>
+            </div>
+          )}
+
+          {/* TRACKING SECTION */}
+          {activeSection === "tracking" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                <Navigation size={18} color={T.accent} />
+                <div style={{ fontSize: 14, color: T.text1 }}>
+                  Configure the Cloudflare Worker URL for automated carrier tracking.
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>
+                  Worker URL
+                </label>
+                <input
+                  type="url"
+                  value={workerUrlInput}
+                  onChange={e => setWorkerUrlInput(e.target.value)}
+                  placeholder="https://cargodesk-tracker.your-subdomain.workers.dev"
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>
+                  The URL of your deployed Cloudflare Worker that proxies carrier tracking requests.
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <button onClick={handleSaveWorkerUrl}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8,
+                    fontSize: 13, fontWeight: 600, color: "white", background: T.accent,
+                    border: "none", cursor: "pointer",
+                  }}>
+                  <CheckCircle2 size={14} /> Save
+                </button>
+                <button onClick={handleTestWorker}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8,
+                    fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3,
+                    border: `1px solid ${T.border1}`, cursor: "pointer",
+                  }}>
+                  <RefreshCw size={14} /> Test Connection
+                </button>
+              </div>
+
+              {workerTestResult && (
+                <div style={{
+                  padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8, marginBottom: 16,
+                  background: workerTestResult.ok === true ? T.greenBg : workerTestResult.ok === false ? T.redBg : T.bg3,
+                  border: `1px solid ${workerTestResult.ok === true ? T.greenBorder : workerTestResult.ok === false ? T.redBorder : T.border1}`,
+                  color: workerTestResult.ok === true ? T.green : workerTestResult.ok === false ? T.red : T.text2,
+                  fontSize: 13,
+                }}>
+                  {workerTestResult.ok === true && <CheckCircle2 size={14} />}
+                  {workerTestResult.ok === false && <AlertTriangle size={14} />}
+                  {workerTestResult.ok === null && <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                  {workerTestResult.text}
+                </div>
+              )}
+
+              <div style={{ padding: 16, borderRadius: 10, background: T.bg3, border: `1px solid ${T.border0}` }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text1, marginBottom: 8 }}>Setup Instructions</div>
+                <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: T.text2, lineHeight: 1.8 }}>
+                  <li>Go to <strong>Cloudflare Dashboard</strong> → Workers & Pages</li>
+                  <li>Create a new Worker named <code style={{ fontSize: 11, padding: "1px 4px", borderRadius: 3, background: T.bg4, color: T.text1 }}>cargodesk-tracker</code></li>
+                  <li>Paste the worker code and deploy</li>
+                  <li>Copy the worker URL and paste it above</li>
+                  <li>Click <strong>Test Connection</strong> to verify</li>
+                </ol>
+
+                <div style={{ marginTop: 12, fontSize: 12, color: T.text3 }}>
+                  <strong>Supported carriers:</strong> Hapag-Lloyd, MSC, Maersk (API tracking). All other carriers have direct website links.
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: T.text3 }}>
+                  <strong>Note:</strong> Most carriers load tracking data via JavaScript, so API results may be limited. The direct tracking link on each carrier's website is always the most reliable source.
+                </div>
               </div>
             </div>
           )}

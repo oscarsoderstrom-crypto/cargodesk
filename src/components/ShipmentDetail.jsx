@@ -1,14 +1,19 @@
 import { useState, useEffect } from "react";
-import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown } from "lucide-react";
+import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, Navigation } from "lucide-react";
 import CostsTab from "./CostsTab.jsx";
 import DocumentsTab from "./DocumentsTab.jsx";
 import NotesTab from "./NotesTab.jsx";
+import ETATracker from "./ETATracker.jsx";
+import TrackingTab from "./TrackingTab.jsx";
 import PortSelect from "./PortSelect.jsx";
 import CarrierSelect from "./CarrierSelect.jsx";
 import ContainerSelect from "./ContainerSelect.jsx";
 import { updateShipment } from "../db/schema.js";
 import { toEUR, formatEUR } from "../utils/currency.js";
 import { formatContainer } from "../utils/containers.js";
+import { generateCMR, hasTruckingLeg } from "../utils/cmrGenerator.js";
+import { generateShipmentSummary } from "../utils/shipmentPdf.js";
+import { addTemplate, addActivity } from "../db/schema.js";
 
 const MODE_ICON = { ocean: Ship, air: Plane, truck: Truck };
 const STATUS_OPTIONS = [
@@ -36,17 +41,16 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
   const fmtDate = d => { if (!d || d === "—") return "—"; return new Date(d).toLocaleDateString("fi-FI", { day: "numeric", month: "short", year: "numeric" }); };
   const daysUntil = d => { if (!d || d === "—") return null; return Math.ceil((new Date(d) - new Date()) / 86400000); };
 
-   // ...existing code...
-    const tabs = [
-      { id: "overview", label: "Overview", icon: Eye },
-      { id: "costs", label: "Costs", icon: DollarSign },
-      { id: "documents", label: "Documents", icon: FileText },
-      { id: "milestones", label: "Milestones", icon: CheckCircle2 },
-      { id: "notes", label: "Notes", icon: MessageSquare },
-    ]; // <-- add this
-  
-    const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14, border: `1px solid ${T.border1}`, background: T.bg3, color: T.text0, outline: "none" };
-    // ...existing code...
+  const tabs = [
+    { id: "overview", label: "Overview", icon: Eye },
+    { id: "costs", label: "Costs", icon: DollarSign },
+    { id: "documents", label: "Documents", icon: FileText },
+    { id: "tracking", label: "Tracking", icon: Navigation },
+    { id: "milestones", label: "Milestones", icon: CheckCircle2 },
+    { id: "notes", label: "Notes", icon: MessageSquare },
+  ];
+
+  const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14, border: `1px solid ${T.border1}`, background: T.bg3, color: T.text0, outline: "none" };
   const labelStyle = { display: "block", fontSize: 11, fontWeight: 600, color: T.text3, marginBottom: 4 };
 
   // Start editing: populate form with current shipment data
@@ -86,6 +90,13 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
         etd: editForm.etd || null, eta: editForm.eta || null, mode: editForm.mode,
         customerRef: editForm.customerRef || null,
       });
+      // Track original ETD/ETA on first change
+      if (changes.etd && !shipment.originalETD && shipment.etd && changes.etd !== shipment.etd) {
+        changes.originalETD = shipment.etd;
+      }
+      if (changes.eta && !shipment.originalETA && shipment.eta && changes.eta !== shipment.eta) {
+        changes.originalETA = shipment.eta;
+      }
     } else if (tab === "milestones") {
       changes.milestones = editMilestones.filter(m => m.label.trim());
     }
@@ -106,6 +117,11 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
   const updateMilestone = (id, key, val) => {
     setEditMilestones(prev => prev.map(m => m.id === id ? { ...m, [key]: val } : m));
   };
+
+  // Transit time calculation
+  const transitDays = (shipment.etd && shipment.eta) ? Math.ceil((new Date(shipment.eta) - new Date(shipment.etd)) / 86400000) : null;
+  const showCMR = hasTruckingLeg(shipment);
+  const co2e = shipment.co2e;
 
   return (
     <div style={{ height: "100%", overflow: "auto", background: T.bg1 }}>
@@ -130,15 +146,63 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                 {shipment.customerRef && <span style={{ color: T.text3 }}>• {shipment.customerRef}</span>}
               </div>
             )}
+            {shipment.carrierBookingNumber && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 4, color: T.text2 }}>
+                <span>Carrier Booking: <strong style={{ color: T.text0, fontFamily: mono }}>{shipment.carrierBookingNumber}</strong></span>
+                {shipment.blNumber && <span style={{ color: T.text3 }}>• BL: <strong style={{ fontFamily: mono }}>{shipment.blNumber}</strong></span>}
+              </div>
+            )}
             <div style={{ fontSize: 14, marginTop: 8, color: T.text1 }}>
               <strong>{shipment.origin}</strong> → <strong>{shipment.destination}</strong>
               <span style={{ margin: "0 8px", color: T.border2 }}>|</span>{shipment.carrier} • {shipment.containerType}
+            </div>
+            {/* Info badges row */}
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              {transitDays && transitDays > 0 && (
+                <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 4, background: T.bg4, color: T.text2 }}>
+                  <Calendar size={11} /> {transitDays} days transit
+                </span>
+              )}
+              {co2e && co2e.kg > 0 && (
+                <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 4, background: "rgba(16,185,129,0.08)", color: T.green, border: "1px solid rgba(16,185,129,0.15)" }}>
+                  <Leaf size={11} /> {co2e.kg >= 1000 ? `${(co2e.kg / 1000).toFixed(2)} t` : `${co2e.kg} kg`} CO₂e
+                </span>
+              )}
             </div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, color: T.text2 }}>Margin</div>
             <div style={{ fontSize: 24, fontWeight: 700, color: margin >= 0 ? T.green : T.red, fontFamily: mono }}>{formatEUR(margin)}</div>
             <div style={{ fontSize: 12, color: margin >= 0 ? T.green : T.red }}>{marginPct.toFixed(1)}%</div>
+            {/* Quick action buttons */}
+            <div style={{ display: "flex", gap: 6, marginTop: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button onClick={() => generateShipmentSummary(shipment, project, { totalCost })}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
+                <FileDown size={12} /> Export PDF
+              </button>
+              {showCMR && (
+                <button onClick={() => generateCMR(shipment, project)}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: "pointer" }}>
+                  <Printer size={12} /> Print CMR
+                </button>
+              )}
+              <button onClick={async () => {
+                const template = {
+                  id: crypto.randomUUID(), name: `${shipment.origin} → ${shipment.destination} (${shipment.carrier})`,
+                  mode: shipment.mode, origin: shipment.origin, destination: shipment.destination,
+                  carrier: shipment.carrier, containerType: shipment.containerType,
+                  containerTypeId: shipment.containerTypeId, containerCount: shipment.containerCount,
+                  routing: shipment.routing, projectId: shipment.projectId,
+                };
+                await addTemplate(template);
+                await addActivity({ id: crypto.randomUUID(), type: "shipment", message: `Template saved: ${template.name}`, shipmentId: shipment.id, timestamp: new Date().toISOString() });
+                if (onUpdate) onUpdate();
+                alert("Template saved! Use it when creating new shipments.");
+              }}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.amber, background: T.amberBg, border: `1px solid ${T.amberBorder}`, cursor: "pointer" }}>
+                <Bookmark size={12} /> Save Template
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -181,13 +245,15 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
 
         {/* ===== OVERVIEW TAB ===== */}
         {tab === "overview" && !editing && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+          <div>
+            <ETATracker shipment={shipment} isDark={T.bg0==="#0A0E17"} />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
             <div>
               <h3 style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16, color: T.text2 }}>Transport Details</h3>
               <div style={{ background: T.bg2, borderRadius: 10, border: `1px solid ${T.border1}` }}>
-                {[["Vessel / Vehicle", shipment.vessel || "—"], ["Voyage", shipment.voyage || "—"], ["Carrier", shipment.carrier || "—"], ["Routing", shipment.routing || "—"], ["Container / Cargo", shipment.containerType || "—"], ["ETD", fmtDate(shipment.etd)], ["ETA", fmtDate(shipment.eta)]].map(([l, v], i) =>
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < 6 ? `1px solid ${T.border0}` : "none" }}>
-                    <span style={{ fontSize: 14, color: T.text2 }}>{l}</span><span style={{ fontSize: 14, fontWeight: 500, color: T.text0 }}>{v}</span>
+                {[["Vessel / Vehicle", shipment.vessel || "—"], ["Voyage", shipment.voyage || "—"], ["Carrier", shipment.carrier || "—"], ["Carrier Booking #", shipment.carrierBookingNumber || "—"], ["BL/SWB #", shipment.blNumber || "—"], ["Quotation #", shipment.quotationNumber || "—"], ["Routing", shipment.routing || "—"], ["Container / Cargo", shipment.containerType || "—"], ["ETD", fmtDate(shipment.etd)], ["ETA", fmtDate(shipment.eta)]].map(([l, v], i) =>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < 9 ? `1px solid ${T.border0}` : "none" }}>
+                    <span style={{ fontSize: 14, color: T.text2 }}>{l}</span><span style={{ fontSize: 14, fontWeight: 500, color: T.text0, fontFamily: l.includes("#") ? mono : "inherit" }}>{v}</span>
                   </div>)}
               </div>
             </div>
@@ -201,6 +267,7 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                   {d !== null && !m.done && d <= 3 && d >= 0 && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: d <= 1 ? T.redBg : T.amberBg, color: d <= 1 ? T.red : T.amber }}>{d === 0 ? "TODAY" : `${d}d`}</span>}
                 </div>; })}
             </div>
+          </div>
           </div>
         )}
 
@@ -297,6 +364,9 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
 
         {/* ===== DOCUMENTS TAB ===== */}
         {tab === "documents" && <DocumentsTab T={T} shipment={shipment} onDocumentAdded={onUpdate} />}
+
+        {/* ===== TRACKING TAB ===== */}
+        {tab === "tracking" && <TrackingTab T={T} shipment={shipment} onUpdate={onUpdate} />}
 
         {/* ===== MILESTONES TAB (view mode) ===== */}
         {tab === "milestones" && !editing && (
