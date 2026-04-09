@@ -182,8 +182,9 @@ export function computeCO2eReport(shipments, projects, year, month) {
  * Export monthly financial report as .xlsx
  * Uses the xlsx library (already a dependency).
  */
+import * as XLSX from 'xlsx';
+
 export async function exportMonthlyExcel(financialData, co2eData) {
-  const XLSX = await import('xlsx');
 
   const wb = XLSX.utils.book_new();
 
