@@ -210,9 +210,9 @@ export default function MonthlyReportModal({ shipments = [], projects = [], rate
   const financialData = useMemo(() => computeFinancialReport(shipments, projects, year, month, rates), [shipments, projects, year, month, rates]);
   const co2eData = useMemo(() => computeCO2eReport(shipments, projects, year, month), [shipments, projects, year, month]);
 
-  async function handleExport() {
+  function handleExport() {
     setExporting(true);
-    try { await exportMonthlyExcel(financialData, co2eData); }
+    try { exportMonthlyExcel(financialData, co2eData); }
     finally { setExporting(false); }
   }
 

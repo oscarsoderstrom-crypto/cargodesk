@@ -1,5 +1,6 @@
 // monthlyReports.js — Compute financial and CO2e report data for a given month
 // Consumed by MonthlyReportModal.jsx
+import * as XLSX from 'xlsx';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -182,10 +183,7 @@ export function computeCO2eReport(shipments, projects, year, month) {
  * Export monthly financial report as .xlsx
  * Uses the xlsx library (already a dependency).
  */
-import * as XLSX from 'xlsx';
-
-export async function exportMonthlyExcel(financialData, co2eData) {
-
+export function exportMonthlyExcel(financialData, co2eData) {
   const wb = XLSX.utils.book_new();
 
   // ── Financial sheet ──

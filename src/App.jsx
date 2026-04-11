@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
-import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, ClipboardList } from "lucide-react";
+import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot } from "lucide-react";
 import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates } from "./db/schema.js";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import ShipmentDetail from "./components/ShipmentDetail.jsx";
@@ -13,6 +13,7 @@ import ActivityFeed from "./components/ActivityFeed.jsx";
 import MorningBrief from "./components/MorningBrief.jsx";
 import MonthlyReportModal from "./components/MonthlyReportModal.jsx";
 import WeeklySnapshotReport from "./components/WeeklySnapshotReport.jsx";
+import AssistantPanel from "./components/AssistantPanel.jsx";
 import { extractTextFromPDF, fileToBase64 } from "./parsers/pdfParser.js";
 import { parseDocumentText } from "./parsers/carrierParsers.js";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
@@ -142,6 +143,8 @@ export default function App(){
   const[showMorningBrief,setShowMorningBrief]=useState(false);
   const[showMonthlyReport,setShowMonthlyReport]=useState(false);
   const[showWeeklyReport,setShowWeeklyReport]=useState(false);
+  // Phase D state
+  const[showAssistant,setShowAssistant]=useState(false);
 
   const loadData=useCallback(async()=>{
     try{
@@ -168,12 +171,13 @@ export default function App(){
         else if(showMorningBrief)setShowMorningBrief(false);
         else if(showMonthlyReport)setShowMonthlyReport(false);
         else if(showWeeklyReport)setShowWeeklyReport(false);
+        else if(showAssistant)setShowAssistant(false);
         else if(sel){setSel(null);}
         else if(projectView){setProjectView(null);}
       }
     };
     window.addEventListener("keydown",handler);return()=>window.removeEventListener("keydown",handler);
-  },[showNewShipment,showSettings,showExport,showMorningBrief,showMonthlyReport,showWeeklyReport,sel,projectView]);
+  },[showNewShipment,showSettings,showExport,showMorningBrief,showMonthlyReport,showWeeklyReport,showAssistant,sel,projectView]);
 
   const logActivity=async(type,message,shipmentId=null)=>{try{await addActivity({id:crypto.randomUUID(),type,message,shipmentId,timestamp:new Date().toISOString()});const a=await getActivities(50);setActivities(a);}catch{}};
 
@@ -230,8 +234,12 @@ export default function App(){
         <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #1A2236"}}>
           <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em",color:"#4F5E78",padding:"4px 12px 6px"}}>Reports</div>
           <div onClick={()=>setShowMorningBrief(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><Calendar size={18}/> Morning Brief</div>
-          <div onClick={()=>setShowWeeklyReport(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><ClipboardList size={18}/> Weekly Report</div>
+          <div onClick={()=>setShowWeeklyReport(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><List size={18}/> Weekly Report</div>
           <div onClick={()=>setShowMonthlyReport(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><BarChart3 size={18}/> Monthly Report</div>
+        </div>
+        {/* Phase D: AI Assistant button */}
+        <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #1A2236"}}>
+          <div onClick={()=>setShowAssistant(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:showAssistant?"#3B82F6":"#8494B0",background:showAssistant?"rgba(59,130,246,0.12)":"transparent",borderLeft:showAssistant?"2px solid #3B82F6":"2px solid transparent",cursor:"pointer"}} onMouseEnter={e=>{if(!showAssistant)e.currentTarget.style.background="rgba(59,130,246,0.08)";}} onMouseLeave={e=>{if(!showAssistant)e.currentTarget.style.background="transparent";}}><Bot size={18}/> AI Assistant</div>
         </div>
       </nav>
       <div style={{padding:"0 12px",marginBottom:16}}><div style={{padding:16,borderRadius:12,background:"#161C2E",border:"1px solid #1A2236"}}><div style={{fontSize:12,fontWeight:500,marginBottom:4,color:"#4F5E78"}}>Active</div><div style={{fontSize:24,fontWeight:700,color:"#F1F5F9",fontFamily:"'JetBrains Mono',monospace"}}>{shipments.filter(s=>!["delivered","completed"].includes(s.status)).length}</div><div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginTop:4,color:"#3B82F6"}}><Ship size={12}/>{shipments.filter(s=>s.status==="in_transit").length} in transit</div></div></div>
@@ -280,4 +288,6 @@ export default function App(){
     {showMorningBrief&&<MorningBrief shipments={shipments} quotes={[]} isDark={isDark} onClose={()=>setShowMorningBrief(false)} onNavigate={id=>{setSel(id);setProjectView(null);setShowMorningBrief(false);}}/>}
     {showMonthlyReport&&<MonthlyReportModal shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowMonthlyReport(false)}/>}
     {showWeeklyReport&&<WeeklySnapshotReport shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowWeeklyReport(false)} onNavigate={id=>{setSel(id);setProjectView(null);}}/>}
+    {/* Phase D: AI Assistant */}
+    {showAssistant&&<AssistantPanel shipments={shipments} projects={projects} quotes={[]} rates={rates} isDark={isDark} onClose={()=>setShowAssistant(false)} onNavigate={id=>{setSel(id);setProjectView(null);setTab("dashboard");}} onDataChange={loadData}/>}
   </div></ThemeCtx.Provider>;}
