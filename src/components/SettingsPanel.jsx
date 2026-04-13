@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation } from "lucide-react";
+import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation, Bot } from "lucide-react";
 import { exportData, importData, resetDB, getMode, setMode } from "../db/schema.js";
 import { getWorkerUrl, setWorkerUrl } from "../utils/tracking.js";
+import { getAiWorkerUrl, setAiWorkerUrl } from "../utils/assistantContext.js";
 
 export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }) {
   const [activeSection, setActiveSection] = useState("mode");
@@ -11,8 +12,15 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
   const [message, setMessage] = useState(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [processing, setProcessing] = useState(false);
+
+  // Tracking worker
   const [workerUrlInput, setWorkerUrlInput] = useState(getWorkerUrl());
   const [workerTestResult, setWorkerTestResult] = useState(null);
+
+  // AI worker
+  const [aiWorkerUrl, setAiWorkerUrlInput] = useState(getAiWorkerUrl());
+  const [aiTestResult, setAiTestResult] = useState(null);
+  const [aiTesting, setAiTesting] = useState(false);
 
   const currentMode = getMode();
 
@@ -36,192 +44,234 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
     setProcessing(true);
     try {
       const result = await exportData(exportPassword || null);
-      const blob = new Blob([result], { type: exportPassword ? 'text/plain' : 'application/json' });
+      const blob = new Blob([result], { type: exportPassword ? "text/plain" : "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
-      a.download = `cargodesk_backup_${currentMode}_${new Date().toISOString().split('T')[0]}${exportPassword ? '.enc' : '.json'}`;
+      a.download = `cargodesk-backup-${new Date().toISOString().slice(0, 10)}${exportPassword ? ".enc" : ".json"}`;
       a.click();
       URL.revokeObjectURL(url);
-      showMessage('success', `Backup exported${exportPassword ? ' (encrypted)' : ''}.`);
-      setExportPassword("");
+      showMessage("success", "Backup downloaded successfully.");
     } catch (err) {
-      showMessage('error', `Export failed: ${err.message}`);
+      showMessage("error", `Export failed: ${err.message}`);
     } finally {
       setProcessing(false);
     }
   };
 
   const handleImport = async () => {
-    if (!importText.trim()) return;
+    if (!importText.trim()) { showMessage("error", "Paste backup data first."); return; }
     setProcessing(true);
     try {
       const result = await importData(importText.trim(), importPassword || null);
-      showMessage('success', `Imported ${result.projects} projects, ${result.shipments} shipments, ${result.documents} documents.`);
-      setImportText("");
-      setImportPassword("");
+      showMessage("success", `Restored: ${result.projects} projects, ${result.shipments} shipments, ${result.documents} documents.`);
+      setImportText(""); setImportPassword("");
       if (onDataChange) onDataChange();
     } catch (err) {
-      showMessage('error', err.message);
+      showMessage("error", `Import failed: ${err.message}`);
     } finally {
       setProcessing(false);
     }
-  };
-
-  const handleFileImport = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    setImportText(text);
-    e.target.value = '';
   };
 
   const handleReset = async () => {
     setProcessing(true);
     try {
       await resetDB();
+      showMessage("success", "Database reset successfully.");
       setConfirmReset(false);
-      showMessage('success', `Database reset.${currentMode === 'test' ? ' Sample data restored.' : ''}`);
       if (onDataChange) onDataChange();
     } catch (err) {
-      showMessage('error', `Reset failed: ${err.message}`);
+      showMessage("error", `Reset failed: ${err.message}`);
     } finally {
       setProcessing(false);
     }
   };
 
+  // ── Tracking worker ──────────────────────────────────────────────────────────
+
   const handleSaveWorkerUrl = () => {
-    const url = workerUrlInput.trim().replace(/\/$/, '');
-    setWorkerUrl(url);
-    if (url) {
-      showMessage('success', 'Tracking worker URL saved.');
-    } else {
-      showMessage('success', 'Tracking worker URL cleared.');
-    }
+    setWorkerUrl(workerUrlInput.trim());
+    showMessage("success", "Tracking worker URL saved.");
+    setWorkerTestResult(null);
   };
 
   const handleTestWorker = async () => {
-    const url = workerUrlInput.trim().replace(/\/$/, '');
-    if (!url) { setWorkerTestResult({ ok: false, text: 'Enter a URL first.' }); return; }
-    setWorkerTestResult({ ok: null, text: 'Testing...' });
+    const url = workerUrlInput.trim();
+    if (!url) { setWorkerTestResult({ ok: false, message: "Enter a worker URL first." }); return; }
+    setWorkerTestResult({ ok: null, message: "Testing…" });
     try {
-      const resp = await fetch(url + '/track', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ carrier: 'test', bookingNumber: 'TEST123' }),
-      });
-      const data = await resp.json();
-      if (resp.ok && data.error && data.error.includes('not supported')) {
-        setWorkerTestResult({ ok: true, text: 'Worker is reachable and responding correctly.' });
-      } else if (resp.ok) {
-        setWorkerTestResult({ ok: true, text: 'Worker responded.' });
+      const res = await fetch(`${url}?test=ping`, { method: "GET" });
+      if (res.ok || res.status === 405) {
+        setWorkerTestResult({ ok: true, message: "Worker is reachable." });
       } else {
-        setWorkerTestResult({ ok: false, text: `Worker returned HTTP ${resp.status}.` });
+        setWorkerTestResult({ ok: false, message: `Worker returned status ${res.status}.` });
       }
-    } catch (err) {
-      setWorkerTestResult({ ok: false, text: `Could not reach worker: ${err.message}` });
+    } catch {
+      setWorkerTestResult({ ok: false, message: "Could not reach worker. Check the URL." });
     }
   };
 
+  // ── AI worker ────────────────────────────────────────────────────────────────
+
+  const handleSaveAiUrl = () => {
+    setAiWorkerUrl(aiWorkerUrl.trim());
+    showMessage("success", "AI worker URL saved.");
+    setAiTestResult(null);
+  };
+
+  const handleTestAiWorker = async () => {
+    const url = aiWorkerUrl.trim();
+    if (!url) { setAiTestResult({ ok: false, message: "Enter a worker URL first." }); return; }
+    setAiTesting(true);
+    setAiTestResult({ ok: null, message: "Testing…" });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 10,
+          messages: [{ role: "user", content: "Hi" }],
+        }),
+      });
+      if (res.ok) {
+        setAiTestResult({ ok: true, message: "Connected successfully — AI is ready." });
+      } else {
+        const text = await res.text();
+        let detail = `Status ${res.status}`;
+        try { detail = JSON.parse(text)?.error?.message || detail; } catch {}
+        setAiTestResult({ ok: false, message: `Worker error: ${detail}` });
+      }
+    } catch (err) {
+      setAiTestResult({ ok: false, message: `Could not reach worker: ${err.message}` });
+    } finally {
+      setAiTesting(false);
+    }
+  };
+
+  // ── Sections ─────────────────────────────────────────────────────────────────
+
   const sections = [
-    { id: "mode", label: "Mode" },
+    { id: "mode",     label: "Mode" },
+    { id: "ai",       label: "AI Assistant" },
     { id: "tracking", label: "Tracking" },
-    { id: "backup", label: "Backup" },
-    { id: "restore", label: "Restore" },
-    { id: "danger", label: "Reset" },
+    { id: "backup",   label: "Backup" },
   ];
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }} />
-      <div style={{ position: "relative", width: 560, maxHeight: "85vh", overflow: "auto", background: T.bg2, borderRadius: 16, border: `1px solid ${T.border1}`, boxShadow: `0 24px 80px ${T.shadowHeavy}` }}>
+      <div style={{ position: "relative", width: 580, maxHeight: "88vh", overflow: "auto", background: T.bg2, borderRadius: 16, border: `1px solid ${T.border1}`, boxShadow: `0 24px 80px ${T.shadowHeavy}` }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: `1px solid ${T.border1}`, position: "sticky", top: 0, background: T.bg2, zIndex: 1, borderRadius: "16px 16px 0 0" }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: T.text0 }}>Settings</h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: T.text2, padding: 4 }}><X size={20} /></button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: T.text2, cursor: "pointer", padding: 4 }}><X size={20} /></button>
         </div>
 
-        {/* Tab navigation */}
-        <div style={{ display: "flex", gap: 4, padding: "12px 24px", borderBottom: `1px solid ${T.border0}`, flexWrap: "wrap" }}>
+        {/* Nav tabs */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${T.border1}`, padding: "0 24px" }}>
           {sections.map(s => (
-            <button key={s.id} onClick={() => setActiveSection(s.id)}
-              style={{
-                padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer",
-                background: activeSection === s.id ? T.bg4 : "transparent",
-                color: activeSection === s.id ? T.text0 : T.text3,
-                border: "none",
-              }}>{s.label}</button>
+            <div key={s.id} onClick={() => setActiveSection(s.id)}
+              style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: activeSection === s.id ? T.accent : T.text2, borderBottom: `2px solid ${activeSection === s.id ? T.accent : "transparent"}`, transition: "color 0.15s" }}>
+              {s.label}
+            </div>
           ))}
         </div>
 
-        {/* Message */}
-        {message && (
-          <div style={{ margin: "12px 24px 0", padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8,
-            background: message.type === 'success' ? T.greenBg : T.redBg,
-            border: `1px solid ${message.type === 'success' ? T.greenBorder : T.redBorder}`,
-            color: message.type === 'success' ? T.green : T.red, fontSize: 13, fontWeight: 500 }}>
-            {message.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-            {message.text}
-          </div>
-        )}
+        <div style={{ padding: "24px" }}>
 
-        <div style={{ padding: 24 }}>
+          {/* Message banner */}
+          {message && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, marginBottom: 20, background: message.type === "success" ? T.greenBg : T.redBg, border: `1px solid ${message.type === "success" ? T.greenBorder : T.redBorder}`, color: message.type === "success" ? T.green : T.red, fontSize: 13 }}>
+              {message.type === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              {message.text}
+            </div>
+          )}
 
-          {/* MODE SECTION */}
+          {/* ── MODE ── */}
           {activeSection === "mode" && (
             <div>
-              <div style={{ fontSize: 14, color: T.text1, marginBottom: 16 }}>
-                Switch between test and production databases. Each mode has its own completely separate data.
+              <div style={{ fontSize: 14, color: T.text1, marginBottom: 20, lineHeight: 1.6 }}>
+                CargoDesk uses separate databases for Test and Production. Switch modes to work with test data without affecting real shipments.
               </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <button onClick={() => handleModeSwitch('test')}
-                  style={{
-                    padding: 20, borderRadius: 12, textAlign: "left", cursor: "pointer",
-                    background: currentMode === 'test' ? T.amberBg : T.bg3,
-                    border: `2px solid ${currentMode === 'test' ? T.amber : T.border1}`,
-                    transition: "all 0.15s",
-                  }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: T.amber }} />
-                    <span style={{ fontSize: 16, fontWeight: 700, color: currentMode === 'test' ? T.amber : T.text0 }}>Test Mode</span>
+              <div style={{ display: "flex", gap: 12 }}>
+                {["test", "production"].map(mode => (
+                  <div key={mode} onClick={() => handleModeSwitch(mode)}
+                    style={{ flex: 1, padding: 16, borderRadius: 10, cursor: "pointer", textAlign: "center", background: currentMode === mode ? T.accentGlow : T.bg3, border: `1px solid ${currentMode === mode ? T.accent : T.border1}`, transition: "all 0.15s" }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: currentMode === mode ? T.accent : T.text1, textTransform: "capitalize", marginBottom: 4 }}>{mode}</div>
+                    <div style={{ fontSize: 12, color: T.text3 }}>{mode === "test" ? "Safe sandbox with seed data" : "Your real shipment data"}</div>
+                    {currentMode === mode && <div style={{ fontSize: 11, fontWeight: 700, color: T.accent, marginTop: 6 }}>● ACTIVE</div>}
                   </div>
-                  <div style={{ fontSize: 13, color: T.text2, lineHeight: 1.5 }}>
-                    Pre-loaded sample data. Safe to experiment — your real data is untouched.
-                  </div>
-                  {currentMode === 'test' && (
-                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.amber }}>✓ Currently active</div>
-                  )}
-                </button>
-
-                <button onClick={() => handleModeSwitch('production')}
-                  style={{
-                    padding: 20, borderRadius: 12, textAlign: "left", cursor: "pointer",
-                    background: currentMode === 'production' ? T.greenBg : T.bg3,
-                    border: `2px solid ${currentMode === 'production' ? T.green : T.border1}`,
-                    transition: "all 0.15s",
-                  }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: T.green }} />
-                    <span style={{ fontSize: 16, fontWeight: 700, color: currentMode === 'production' ? T.green : T.text0 }}>Production</span>
-                  </div>
-                  <div style={{ fontSize: 13, color: T.text2, lineHeight: 1.5 }}>
-                    Your real data. Starts empty — create your actual projects and shipments here.
-                  </div>
-                  {currentMode === 'production' && (
-                    <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: T.green }}>✓ Currently active</div>
-                  )}
-                </button>
+                ))}
               </div>
-
-              <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border0}`, fontSize: 12, color: T.text3, lineHeight: 1.5 }}>
-                <strong style={{ color: T.text2 }}>How it works:</strong> Each mode uses a separate database. Switching modes instantly loads the other database. No data is shared or lost when switching.
+              <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3 }}>
+                Switching modes instantly loads the other database. No data is shared or lost when switching.
               </div>
             </div>
           )}
 
-          {/* TRACKING SECTION */}
+          {/* ── AI ASSISTANT ── */}
+          {activeSection === "ai" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                <Bot size={18} color={T.accent} />
+                <div style={{ fontSize: 14, color: T.text1 }}>
+                  Configure the Cloudflare Worker that proxies requests to the Anthropic API.
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>
+                  AI Worker URL
+                </label>
+                <input
+                  type="url"
+                  value={aiWorkerUrl}
+                  onChange={e => setAiWorkerUrlInput(e.target.value)}
+                  placeholder="https://cargodesk-ai.your-subdomain.workers.dev"
+                  style={inputStyle}
+                />
+                <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>
+                  The URL of your deployed Cloudflare Worker (cargodesk-ai).
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <button onClick={handleSaveAiUrl}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: T.accent, border: "none", cursor: "pointer" }}>
+                  <CheckCircle2 size={14} /> Save
+                </button>
+                <button onClick={handleTestAiWorker} disabled={aiTesting}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3, border: `1px solid ${T.border1}`, cursor: aiTesting ? "not-allowed" : "pointer", opacity: aiTesting ? 0.6 : 1 }}>
+                  <RefreshCw size={14} style={{ animation: aiTesting ? "spin 0.8s linear infinite" : "none" }} />
+                  {aiTesting ? "Testing…" : "Test Connection"}
+                </button>
+              </div>
+
+              {aiTestResult && (
+                <div style={{ padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: aiTestResult.ok === true ? T.greenBg : aiTestResult.ok === false ? T.redBg : T.bg3, border: `1px solid ${aiTestResult.ok === true ? T.greenBorder : aiTestResult.ok === false ? T.redBorder : T.border1}`, color: aiTestResult.ok === true ? T.green : aiTestResult.ok === false ? T.red : T.text2, fontSize: 13 }}>
+                  {aiTestResult.ok === true && <CheckCircle2 size={15} />}
+                  {aiTestResult.ok === false && <AlertTriangle size={15} />}
+                  {aiTestResult.ok === null && <RefreshCw size={15} />}
+                  {aiTestResult.message}
+                </div>
+              )}
+
+              <div style={{ padding: 14, borderRadius: 10, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3, lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 700, color: T.text2, marginBottom: 6 }}>Setup instructions</div>
+                <div>1. Go to dash.cloudflare.com → Workers & Pages → Create</div>
+                <div>2. Name it <span style={{ fontFamily: "monospace", color: T.text1 }}>cargodesk-ai</span> and deploy</div>
+                <div>3. Paste the worker code from the project files</div>
+                <div>4. Settings → Variables → Add secret: <span style={{ fontFamily: "monospace", color: T.text1 }}>ANTHROPIC_API_KEY</span></div>
+                <div>5. Copy the worker URL here and click Save</div>
+              </div>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+
+          {/* ── TRACKING ── */}
           {activeSection === "tracking" && (
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
@@ -233,7 +283,7 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
 
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>
-                  Worker URL
+                  Tracking Worker URL
                 </label>
                 <input
                   type="url"
@@ -249,169 +299,106 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
 
               <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
                 <button onClick={handleSaveWorkerUrl}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8,
-                    fontSize: 13, fontWeight: 600, color: "white", background: T.accent,
-                    border: "none", cursor: "pointer",
-                  }}>
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: T.accent, border: "none", cursor: "pointer" }}>
                   <CheckCircle2 size={14} /> Save
                 </button>
                 <button onClick={handleTestWorker}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8,
-                    fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3,
-                    border: `1px solid ${T.border1}`, cursor: "pointer",
-                  }}>
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
                   <RefreshCw size={14} /> Test Connection
                 </button>
               </div>
 
               {workerTestResult && (
-                <div style={{
-                  padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8, marginBottom: 16,
-                  background: workerTestResult.ok === true ? T.greenBg : workerTestResult.ok === false ? T.redBg : T.bg3,
-                  border: `1px solid ${workerTestResult.ok === true ? T.greenBorder : workerTestResult.ok === false ? T.redBorder : T.border1}`,
-                  color: workerTestResult.ok === true ? T.green : workerTestResult.ok === false ? T.red : T.text2,
-                  fontSize: 13,
-                }}>
-                  {workerTestResult.ok === true && <CheckCircle2 size={14} />}
-                  {workerTestResult.ok === false && <AlertTriangle size={14} />}
-                  {workerTestResult.ok === null && <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />}
-                  {workerTestResult.text}
+                <div style={{ padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: workerTestResult.ok === true ? T.greenBg : workerTestResult.ok === false ? T.redBg : T.bg3, border: `1px solid ${workerTestResult.ok === true ? T.greenBorder : workerTestResult.ok === false ? T.redBorder : T.border1}`, color: workerTestResult.ok === true ? T.green : workerTestResult.ok === false ? T.red : T.text2, fontSize: 13 }}>
+                  {workerTestResult.ok === true && <CheckCircle2 size={15} />}
+                  {workerTestResult.ok === false && <AlertTriangle size={15} />}
+                  {workerTestResult.message}
                 </div>
               )}
 
-              <div style={{ padding: 16, borderRadius: 10, background: T.bg3, border: `1px solid ${T.border0}` }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: T.text1, marginBottom: 8 }}>Setup Instructions</div>
-                <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: T.text2, lineHeight: 1.8 }}>
-                  <li>Go to <strong>Cloudflare Dashboard</strong> → Workers & Pages</li>
-                  <li>Create a new Worker named <code style={{ fontSize: 11, padding: "1px 4px", borderRadius: 3, background: T.bg4, color: T.text1 }}>cargodesk-tracker</code></li>
-                  <li>Paste the worker code and deploy</li>
-                  <li>Copy the worker URL and paste it above</li>
-                  <li>Click <strong>Test Connection</strong> to verify</li>
-                </ol>
-
-                <div style={{ marginTop: 12, fontSize: 12, color: T.text3 }}>
-                  <strong>Supported carriers:</strong> Hapag-Lloyd, MSC, Maersk (API tracking). All other carriers have direct website links.
-                </div>
-                <div style={{ marginTop: 4, fontSize: 12, color: T.text3 }}>
-                  <strong>Note:</strong> Most carriers load tracking data via JavaScript, so API results may be limited. The direct tracking link on each carrier's website is always the most reliable source.
-                </div>
+              <div style={{ padding: 14, borderRadius: 10, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3, lineHeight: 1.7 }}>
+                <div style={{ fontWeight: 700, color: T.text2, marginBottom: 6 }}>Supported carriers</div>
+                <div>Hapag-Lloyd, MSC, COSCO, CMA-CGM, ONE, OOCL</div>
+                <div style={{ marginTop: 6 }}>Tracking polls every 4–6 hours and auto-updates shipment status and ETA.</div>
               </div>
             </div>
           )}
 
-          {/* BACKUP SECTION */}
+          {/* ── BACKUP ── */}
           {activeSection === "backup" && (
             <div>
-              <div style={{ fontSize: 14, color: T.text1, marginBottom: 16 }}>
-                Export your {currentMode} data as a backup file. Optionally encrypt it with a password.
-              </div>
-
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>
-                  <Shield size={12} style={{ display: "inline", marginRight: 4 }} />
-                  Encryption Password (optional)
-                </label>
-                <input type="password" value={exportPassword} onChange={e => setExportPassword(e.target.value)}
-                  placeholder="Leave empty for unencrypted backup" style={inputStyle} />
-              </div>
-
-              <button onClick={handleExport} disabled={processing}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 8,
-                  fontSize: 14, fontWeight: 600, color: "white", background: T.accent,
-                  border: "none", cursor: processing ? "wait" : "pointer", width: "100%", justifyContent: "center",
-                }}>
-                {processing ? <RefreshCw size={16} style={{ animation: "spin 1s linear infinite" }} /> : <Download size={16} />}
-                {processing ? "Exporting..." : "Download Backup"}
-              </button>
-              <style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style>
-            </div>
-          )}
-
-          {/* RESTORE SECTION */}
-          {activeSection === "restore" && (
-            <div>
-              <div style={{ fontSize: 14, color: T.text1, marginBottom: 4 }}>
-                Import data from a backup file. This replaces all current {currentMode} data.
-              </div>
-              <div style={{ fontSize: 12, color: T.red, marginBottom: 16 }}>
-                ⚠ Current data in {currentMode} mode will be overwritten.
-              </div>
-
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Backup File</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => document.getElementById('import-file')?.click()}
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
-                    <Upload size={14} /> Choose File
-                  </button>
-                  <input id="import-file" type="file" accept=".json,.enc" onChange={handleFileImport} style={{ display: "none" }} />
-                  {importText && <span style={{ fontSize: 13, color: T.green, display: "flex", alignItems: "center", gap: 4 }}>
-                    <CheckCircle2 size={14} /> File loaded ({(importText.length / 1024).toFixed(1)} KB)
-                  </span>}
+              {/* Export */}
+              <div style={{ marginBottom: 28 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Download size={16} color={T.accent} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: T.text0 }}>Export Backup</span>
                 </div>
-              </div>
-
-              {importText && (
-                <>
-                  <div style={{ marginBottom: 12 }}>
-                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>
-                      Password (if encrypted)
-                    </label>
-                    <input type="password" value={importPassword} onChange={e => setImportPassword(e.target.value)}
-                      placeholder="Leave empty if not encrypted" style={inputStyle} />
-                  </div>
-
-                  <button onClick={handleImport} disabled={processing}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 8,
-                      fontSize: 14, fontWeight: 600, color: "white", background: T.amber,
-                      border: "none", cursor: processing ? "wait" : "pointer", width: "100%", justifyContent: "center",
-                    }}>
-                    {processing ? <RefreshCw size={16} style={{ animation: "spin 1s linear infinite" }} /> : <Upload size={16} />}
-                    {processing ? "Importing..." : "Restore Backup"}
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* DANGER ZONE */}
-          {activeSection === "danger" && (
-            <div>
-              <div style={{ fontSize: 14, color: T.text1, marginBottom: 16 }}>
-                Reset the {currentMode} database.{currentMode === 'test' ? ' This will restore the sample data.' : ' This will delete all your data.'}
-              </div>
-
-              {!confirmReset ? (
-                <button onClick={() => setConfirmReset(true)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", borderRadius: 8,
-                    fontSize: 14, fontWeight: 600, color: T.red, background: T.redBg,
-                    border: `1px solid ${T.redBorder}`, cursor: "pointer",
-                  }}>
-                  <Trash2 size={16} /> Reset {currentMode === 'test' ? 'Test' : 'Production'} Database
+                <div style={{ fontSize: 13, color: T.text2, marginBottom: 12 }}>Download all your data as a JSON file. Add a password to encrypt it.</div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Password (optional)</label>
+                  <input type="password" value={exportPassword} onChange={e => setExportPassword(e.target.value)} placeholder="Leave blank for unencrypted" style={inputStyle} />
+                </div>
+                <button onClick={handleExport} disabled={processing}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: T.accent, border: "none", cursor: processing ? "not-allowed" : "pointer", opacity: processing ? 0.6 : 1 }}>
+                  <Download size={14} /> {processing ? "Exporting…" : "Download Backup"}
                 </button>
-              ) : (
-                <div style={{ padding: 16, borderRadius: 10, background: T.redBg, border: `1px solid ${T.redBorder}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, color: T.red, fontWeight: 600, fontSize: 14 }}>
-                    <AlertTriangle size={18} />
-                    Are you sure? This cannot be undone.
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => setConfirmReset(false)}
-                      style={{ padding: "8px 16px", borderRadius: 6, fontSize: 13, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
-                      Cancel
-                    </button>
-                    <button onClick={handleReset} disabled={processing}
-                      style={{ padding: "8px 16px", borderRadius: 6, fontSize: 13, fontWeight: 600, color: "white", background: T.red, border: "none", cursor: "pointer" }}>
-                      {processing ? "Resetting..." : "Yes, Reset Everything"}
-                    </button>
-                  </div>
+              </div>
+
+              {/* Import */}
+              <div style={{ marginBottom: 28, paddingTop: 20, borderTop: `1px solid ${T.border1}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Upload size={16} color={T.green} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: T.text0 }}>Restore Backup</span>
                 </div>
-              )}
+                <div style={{ fontSize: 13, color: T.text2, marginBottom: 12 }}>Paste your backup JSON below. This will replace all current data.</div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Backup Data</label>
+                  <textarea value={importText} onChange={e => setImportText(e.target.value)} placeholder="Paste backup JSON or encrypted backup here…" rows={4}
+                    style={{ ...inputStyle, resize: "vertical", fontFamily: "monospace", fontSize: 12 }} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Password (if encrypted)</label>
+                  <input type="password" value={importPassword} onChange={e => setImportPassword(e.target.value)} placeholder="Leave blank if unencrypted" style={inputStyle} />
+                </div>
+                <button onClick={handleImport} disabled={processing || !importText.trim()}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: T.green, border: "none", cursor: processing || !importText.trim() ? "not-allowed" : "pointer", opacity: processing || !importText.trim() ? 0.6 : 1 }}>
+                  <Upload size={14} /> {processing ? "Restoring…" : "Restore Backup"}
+                </button>
+              </div>
+
+              {/* Reset */}
+              <div style={{ paddingTop: 20, borderTop: `1px solid ${T.border1}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <Trash2 size={16} color={T.red} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: T.text0 }}>Reset Database</span>
+                </div>
+                <div style={{ fontSize: 13, color: T.text2, marginBottom: 12 }}>
+                  {getMode() === "test" ? "Reset test database to seed data. Production data is unaffected." : "Permanently delete all production data. This cannot be undone."}
+                </div>
+                {!confirmReset ? (
+                  <button onClick={() => setConfirmReset(true)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: T.red, background: T.redBg, border: `1px solid ${T.redBorder}`, cursor: "pointer" }}>
+                    <Trash2 size={14} /> Reset Database
+                  </button>
+                ) : (
+                  <div style={{ padding: 16, borderRadius: 10, background: T.redBg, border: `1px solid ${T.redBorder}` }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: T.red, marginBottom: 12 }}>
+                      <AlertTriangle size={14} style={{ display: "inline", marginRight: 6 }} />
+                      Are you sure? This cannot be undone.
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => setConfirmReset(false)}
+                        style={{ padding: "8px 16px", borderRadius: 6, fontSize: 13, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
+                        Cancel
+                      </button>
+                      <button onClick={handleReset} disabled={processing}
+                        style={{ padding: "8px 16px", borderRadius: 6, fontSize: 13, fontWeight: 600, color: "white", background: T.red, border: "none", cursor: "pointer" }}>
+                        {processing ? "Resetting…" : "Yes, Reset Everything"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
