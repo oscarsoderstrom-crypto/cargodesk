@@ -1,10 +1,8 @@
 import { useState, useEffect } from "react";
-import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, Navigation } from "lucide-react";
+import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, AlertTriangle, Receipt } from "lucide-react";
 import CostsTab from "./CostsTab.jsx";
 import DocumentsTab from "./DocumentsTab.jsx";
 import NotesTab from "./NotesTab.jsx";
-import ETATracker from "./ETATracker.jsx";
-import TrackingTab from "./TrackingTab.jsx";
 import PortSelect from "./PortSelect.jsx";
 import CarrierSelect from "./CarrierSelect.jsx";
 import ContainerSelect from "./ContainerSelect.jsx";
@@ -27,33 +25,54 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
   const [editMilestones, setEditMilestones] = useState([]);
+  const [billingDone, setBillingDone] = useState(shipment.billingDone || false);
+
+  // Sync billingDone if shipment prop changes
+  useEffect(() => { setBillingDone(shipment.billingDone || false); }, [shipment.id, shipment.billingDone]);
 
   const milestones = shipment.milestones || [];
   const mono = "'JetBrains Mono',monospace";
-  const totalCost = (shipment.costs?.items || []).reduce((s, c) => s + toEUR(c.amount, c.currency, rates), 0) + (shipment.costs?.running || []).reduce((s, r) => {
-    const days = r.status === "running" ? Math.max(1, Math.ceil((new Date() - new Date(r.startDate)) / 86400000)) : (r.totalDays || 0);
-    return s + toEUR(r.dailyRate * days, r.currency, rates);
-  }, 0);
-  const quoted = shipment.costs?.quoted || 0, margin = quoted - totalCost, marginPct = quoted > 0 ? (margin / quoted * 100) : 0;
+
+  const totalCost = (shipment.costs?.items || []).reduce((s, c) => s + toEUR(c.amount, c.currency, rates), 0) +
+    (shipment.costs?.running || []).reduce((s, r) => {
+      const days = r.status === "running"
+        ? Math.max(1, Math.ceil((new Date() - new Date(r.startDate)) / 86400000))
+        : (r.totalDays || 0);
+      return s + toEUR(r.dailyRate * days, r.currency, rates);
+    }, 0);
+
+  const quoted = shipment.costs?.quoted || 0;
+  const margin = quoted - totalCost;
+  const marginPct = quoted > 0 ? (margin / quoted * 100) : 0;
+
+  // Cost variance: warn if actual costs exceed quoted by more than 10%
+  const costVariance = quoted > 0 && totalCost > quoted * 1.1;
+  const variancePct = quoted > 0 ? ((totalCost - quoted) / quoted * 100) : 0;
+
   const SC = statusCfg;
-  const Badge = ({ status }) => { const c = SC[status]; if (!c) return null; return <span style={{ background: c.bg, color: c.color, border: `1px solid ${c.ring}`, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{c.label}</span>; };
-  const MIcon = ({ mode, size = 15 }) => { const I = MODE_ICON[mode] || Ship; const colors = { ocean: T.modeOcean, air: T.modeAir, truck: T.modeTruck }; return <I size={size} color={colors[mode] || T.text2} />; };
+  const Badge = ({ status }) => {
+    const c = SC[status]; if (!c) return null;
+    return <span style={{ background: c.bg, color: c.color, border: `1px solid ${c.ring}`, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase", whiteSpace: "nowrap" }}>{c.label}</span>;
+  };
+  const MIcon = ({ mode, size = 15 }) => {
+    const I = MODE_ICON[mode] || Ship;
+    const colors = { ocean: T.modeOcean, air: T.modeAir, truck: T.modeTruck };
+    return <I size={size} color={colors[mode] || T.text2} />;
+  };
   const fmtDate = d => { if (!d || d === "—") return "—"; return new Date(d).toLocaleDateString("fi-FI", { day: "numeric", month: "short", year: "numeric" }); };
   const daysUntil = d => { if (!d || d === "—") return null; return Math.ceil((new Date(d) - new Date()) / 86400000); };
 
   const tabs = [
-    { id: "overview", label: "Overview", icon: Eye },
-    { id: "costs", label: "Costs", icon: DollarSign },
-    { id: "documents", label: "Documents", icon: FileText },
-    { id: "tracking", label: "Tracking", icon: Navigation },
+    { id: "overview",   label: "Overview",   icon: Eye },
+    { id: "costs",      label: "Costs",      icon: DollarSign },
+    { id: "documents",  label: "Documents",  icon: FileText },
     { id: "milestones", label: "Milestones", icon: CheckCircle2 },
-    { id: "notes", label: "Notes", icon: MessageSquare },
+    { id: "notes",      label: "Notes",      icon: MessageSquare },
   ];
 
   const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 14, border: `1px solid ${T.border1}`, background: T.bg3, color: T.text0, outline: "none" };
   const labelStyle = { display: "block", fontSize: 11, fontWeight: 600, color: T.text3, marginBottom: 4 };
 
-  // Start editing: populate form with current shipment data
   const startEditing = () => {
     setEditForm({
       ref: shipment.ref || "",
@@ -79,7 +98,6 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
 
   const saveEdits = async () => {
     const changes = {};
-
     if (tab === "overview") {
       const containerLabel = formatContainer(editForm.containerTypeId, editForm.containerCount);
       Object.assign(changes, {
@@ -90,17 +108,9 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
         etd: editForm.etd || null, eta: editForm.eta || null, mode: editForm.mode,
         customerRef: editForm.customerRef || null,
       });
-      // Track original ETD/ETA on first change
-      if (changes.etd && !shipment.originalETD && shipment.etd && changes.etd !== shipment.etd) {
-        changes.originalETD = shipment.etd;
-      }
-      if (changes.eta && !shipment.originalETA && shipment.eta && changes.eta !== shipment.eta) {
-        changes.originalETA = shipment.eta;
-      }
     } else if (tab === "milestones") {
       changes.milestones = editMilestones.filter(m => m.label.trim());
     }
-
     await updateShipment(shipment.id, changes);
     setEditing(false);
     if (onUpdate) onUpdate();
@@ -111,34 +121,66 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
   const addMilestone = () => {
     setEditMilestones(prev => [...prev, { id: `m${Date.now()}`, label: "", date: null, done: false }]);
   };
-  const removeMilestone = (id) => {
-    setEditMilestones(prev => prev.filter(m => m.id !== id));
-  };
+  const removeMilestone = (id) => { setEditMilestones(prev => prev.filter(m => m.id !== id)); };
   const updateMilestone = (id, key, val) => {
     setEditMilestones(prev => prev.map(m => m.id === id ? { ...m, [key]: val } : m));
   };
 
-  // Transit time calculation
+  // Toggle billing done
+  const handleBillingToggle = async () => {
+    const next = !billingDone;
+    setBillingDone(next);
+    await updateShipment(shipment.id, { billingDone: next });
+    await addActivity({
+      id: crypto.randomUUID(), type: "cost",
+      message: `Billing marked ${next ? "complete" : "incomplete"} on ${shipment.ref || shipment.customerRef || "shipment"}`,
+      shipmentId: shipment.id, timestamp: new Date().toISOString(),
+    });
+    if (onUpdate) onUpdate();
+  };
+
   const transitDays = (shipment.etd && shipment.eta) ? Math.ceil((new Date(shipment.eta) - new Date(shipment.etd)) / 86400000) : null;
   const showCMR = hasTruckingLeg(shipment);
   const co2e = shipment.co2e;
 
   return (
     <div style={{ height: "100%", overflow: "auto", background: T.bg1 }}>
+
       {/* Header */}
       <div style={{ padding: 24, borderBottom: `1px solid ${T.border1}`, background: `linear-gradient(180deg,${T.bg2} 0%,${T.bg1} 100%)` }}>
         <button onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 14, marginBottom: 16, padding: "4px 8px", borderRadius: 4, color: T.text2, background: "none", border: "none", cursor: "pointer" }}>
           <ChevronLeft size={16} /> Back
         </button>
+
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
               <MIcon mode={shipment.mode} size={22} />
               <h1 style={{ fontSize: 24, fontWeight: 700, color: T.text0, fontFamily: mono, margin: 0 }}>
                 {shipment.ref || <span style={{ color: T.text3, fontStyle: "italic" }}>Ref pending</span>}
               </h1>
               <Badge status={shipment.status} />
+
+              {/* Billing done badge — shown for delivered shipments */}
+              {(shipment.status === "delivered" || shipment.status === "completed") && (
+                <button
+                  onClick={handleBillingToggle}
+                  title={billingDone ? "Billing complete — click to unmark" : "Mark billing as complete"}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                    cursor: "pointer", transition: "all 0.15s",
+                    background: billingDone ? T.greenBg : T.amberBg,
+                    color: billingDone ? T.green : T.amber,
+                    border: `1px solid ${billingDone ? T.greenBorder : T.amberBorder}`,
+                  }}
+                >
+                  <Receipt size={11} />
+                  {billingDone ? "Billing done" : "Billing pending"}
+                </button>
+              )}
             </div>
+
             {project && (
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, marginBottom: 4 }}>
                 <FolderOpen size={14} color={T.text2} />
@@ -146,17 +188,14 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                 {shipment.customerRef && <span style={{ color: T.text3 }}>• {shipment.customerRef}</span>}
               </div>
             )}
-            {shipment.carrierBookingNumber && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 4, color: T.text2 }}>
-                <span>Carrier Booking: <strong style={{ color: T.text0, fontFamily: mono }}>{shipment.carrierBookingNumber}</strong></span>
-                {shipment.blNumber && <span style={{ color: T.text3 }}>• BL: <strong style={{ fontFamily: mono }}>{shipment.blNumber}</strong></span>}
-              </div>
-            )}
+
             <div style={{ fontSize: 14, marginTop: 8, color: T.text1 }}>
               <strong>{shipment.origin}</strong> → <strong>{shipment.destination}</strong>
-              <span style={{ margin: "0 8px", color: T.border2 }}>|</span>{shipment.carrier} • {shipment.containerType}
+              <span style={{ margin: "0 8px", color: T.border2 }}>|</span>
+              {shipment.carrier} • {shipment.containerType}
             </div>
-            {/* Info badges row */}
+
+            {/* Info badges */}
             <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
               {transitDays && transitDays > 0 && (
                 <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "3px 8px", borderRadius: 4, background: T.bg4, color: T.text2 }}>
@@ -170,11 +209,21 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
               )}
             </div>
           </div>
+
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, color: T.text2 }}>Margin</div>
             <div style={{ fontSize: 24, fontWeight: 700, color: margin >= 0 ? T.green : T.red, fontFamily: mono }}>{formatEUR(margin)}</div>
             <div style={{ fontSize: 12, color: margin >= 0 ? T.green : T.red }}>{marginPct.toFixed(1)}%</div>
-            {/* Quick action buttons */}
+
+            {/* Cost variance warning */}
+            {costVariance && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6, padding: "4px 8px", borderRadius: 6, background: T.redBg, border: `1px solid ${T.redBorder}`, color: T.red, fontSize: 11, fontWeight: 600 }}>
+                <AlertTriangle size={11} />
+                Costs {variancePct.toFixed(0)}% over quoted
+              </div>
+            )}
+
+            {/* Quick actions */}
             <div style={{ display: "flex", gap: 6, marginTop: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button onClick={() => generateShipmentSummary(shipment, project, { totalCost })}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}>
@@ -207,7 +256,7 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
         </div>
       </div>
 
-      {/* Tab bar with edit toggle */}
+      {/* Tab bar */}
       <div style={{ display: "flex", alignItems: "center", paddingLeft: 24, paddingRight: 16, borderBottom: `1px solid ${T.border1}`, background: T.bg2 }}>
         <div style={{ display: "flex", gap: 0, flex: 1 }}>
           {tabs.map(t => (
@@ -217,8 +266,6 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
             </button>
           ))}
         </div>
-
-        {/* Edit button — available on overview, milestones (costs already editable, documents has its own flow) */}
         {(tab === "overview" || tab === "milestones") && !editing && (
           <button onClick={startEditing}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: "pointer" }}
@@ -245,29 +292,68 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
 
         {/* ===== OVERVIEW TAB ===== */}
         {tab === "overview" && !editing && (
-          <div>
-            <ETATracker shipment={shipment} isDark={T.bg0==="#0A0E17"} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
             <div>
               <h3 style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16, color: T.text2 }}>Transport Details</h3>
               <div style={{ background: T.bg2, borderRadius: 10, border: `1px solid ${T.border1}` }}>
-                {[["Vessel / Vehicle", shipment.vessel || "—"], ["Voyage", shipment.voyage || "—"], ["Carrier", shipment.carrier || "—"], ["Carrier Booking #", shipment.carrierBookingNumber || "—"], ["BL/SWB #", shipment.blNumber || "—"], ["Quotation #", shipment.quotationNumber || "—"], ["Routing", shipment.routing || "—"], ["Container / Cargo", shipment.containerType || "—"], ["ETD", fmtDate(shipment.etd)], ["ETA", fmtDate(shipment.eta)]].map(([l, v], i) =>
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < 9 ? `1px solid ${T.border0}` : "none" }}>
-                    <span style={{ fontSize: 14, color: T.text2 }}>{l}</span><span style={{ fontSize: 14, fontWeight: 500, color: T.text0, fontFamily: l.includes("#") ? mono : "inherit" }}>{v}</span>
-                  </div>)}
+                {[
+                  ["Vessel / Vehicle", shipment.vessel || "—"],
+                  ["Voyage", shipment.voyage || "—"],
+                  ["Carrier", shipment.carrier || "—"],
+                  ["Routing", shipment.routing || "—"],
+                  ["Container / Cargo", shipment.containerType || "—"],
+                  ["ETD", fmtDate(shipment.etd)],
+                  ["ETA", fmtDate(shipment.eta)],
+                ].map(([l, v], i) =>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < 6 ? `1px solid ${T.border0}` : "none" }}>
+                    <span style={{ fontSize: 14, color: T.text2 }}>{l}</span>
+                    <span style={{ fontSize: 14, fontWeight: 500, color: T.text0 }}>{v}</span>
+                  </div>
+                )}
               </div>
+
+              {/* BL / Quotation numbers if present */}
+              {(shipment.blNumber || shipment.quotationNumber) && (
+                <div style={{ marginTop: 12, background: T.bg2, borderRadius: 10, border: `1px solid ${T.border1}` }}>
+                  {shipment.blNumber && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px", borderBottom: shipment.quotationNumber ? `1px solid ${T.border0}` : "none" }}>
+                      <span style={{ fontSize: 14, color: T.text2 }}>BL / SWB</span>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: T.text0, fontFamily: mono }}>{shipment.blNumber}</span>
+                    </div>
+                  )}
+                  {shipment.quotationNumber && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 16px" }}>
+                      <span style={{ fontSize: 14, color: T.text2 }}>Quotation No.</span>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: T.text0, fontFamily: mono }}>{shipment.quotationNumber}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+
             <div>
               <h3 style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16, color: T.text2 }}>Milestone Progress</h3>
-              {milestones.map((m, i) => { const d = daysUntil(m.date), isNext = !m.done && (i === 0 || milestones[i - 1].done);
-                return <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 8, borderRadius: 8, marginBottom: 4, background: isNext ? T.accentGlow : "transparent" }}>
-                  <button onClick={() => onToggleMilestone(shipment.id, m.id)} style={{ flexShrink: 0, cursor: "pointer", color: m.done ? T.green : T.text3, background: "none", border: "none", padding: 0 }}>{m.done ? <CheckCircle2 size={20} /> : <Circle size={20} />}</button>
-                  <div style={{ flex: 1 }}><span style={{ fontSize: 14, color: m.done ? T.text3 : T.text0, textDecoration: m.done ? "line-through" : "none" }}>{m.label}</span></div>
-                  <span style={{ fontSize: 12, color: T.text3, fontFamily: mono }}>{m.date ? fmtDate(m.date) : "TBD"}</span>
-                  {d !== null && !m.done && d <= 3 && d >= 0 && <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: d <= 1 ? T.redBg : T.amberBg, color: d <= 1 ? T.red : T.amber }}>{d === 0 ? "TODAY" : `${d}d`}</span>}
-                </div>; })}
+              {milestones.map((m, i) => {
+                const d = daysUntil(m.date);
+                const isNext = !m.done && (i === 0 || milestones[i - 1].done);
+                return (
+                  <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 8, borderRadius: 8, marginBottom: 4, background: isNext ? T.accentGlow : "transparent" }}>
+                    <button onClick={() => onToggleMilestone(shipment.id, m.id)} style={{ flexShrink: 0, cursor: "pointer", color: m.done ? T.green : T.text3, background: "none", border: "none", padding: 0 }}>
+                      {m.done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+                    </button>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 14, color: m.done ? T.text3 : T.text0, textDecoration: m.done ? "line-through" : "none" }}>{m.label}</span>
+                    </div>
+                    <span style={{ fontSize: 12, color: T.text3, fontFamily: mono }}>{m.date ? fmtDate(m.date) : "TBD"}</span>
+                    {d !== null && !m.done && d <= 3 && d >= 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: d <= 1 ? T.redBg : T.amberBg, color: d <= 1 ? T.red : T.amber }}>
+                        {d === 0 ? "TODAY" : `${d}d`}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </div>
           </div>
         )}
 
@@ -279,8 +365,6 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                 <Settings size={14} color={T.accent} />
                 <span style={{ fontSize: 13, fontWeight: 600, color: T.accent }}>Editing Transport Details</span>
               </div>
-
-              {/* Ref + Status */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <div>
                   <label style={labelStyle}>Reference Number</label>
@@ -293,19 +377,17 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                       <button key={s.id} onClick={() => setField("status", s.id)}
                         style={{ padding: "5px 10px", borderRadius: 5, fontSize: 12, fontWeight: 500, cursor: "pointer",
                           background: editForm.status === s.id ? T.accent : T.bg4, color: editForm.status === s.id ? "white" : T.text2,
-                          border: `1px solid ${editForm.status === s.id ? T.accent : T.border1}` }}>{s.label}</button>
+                          border: `1px solid ${editForm.status === s.id ? T.accent : T.border1}` }}>
+                        {s.label}
+                      </button>
                     ))}
                   </div>
                 </div>
               </div>
-
-              {/* Customer Ref */}
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Customer Reference</label>
                 <input value={editForm.customerRef} onChange={e => setField("customerRef", e.target.value)} placeholder="e.g. USGOLD 4" style={inputStyle} />
               </div>
-
-              {/* Mode */}
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Transport Mode</label>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -319,38 +401,26 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                   ))}
                 </div>
               </div>
-
-              {/* Origin / Destination */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <PortSelect T={T} value={editForm.origin} label="Origin" placeholder="e.g. Helsinki" onChange={val => setField("origin", val)} />
                 <PortSelect T={T} value={editForm.destination} label="Destination" placeholder="e.g. Houston" onChange={val => setField("destination", val)} />
               </div>
-
-              {/* Carrier */}
               <div style={{ marginBottom: 16 }}>
                 <CarrierSelect T={T} value={editForm.carrier} mode={editForm.mode} label="Carrier" onChange={val => setField("carrier", val)} />
               </div>
-
-              {/* Container */}
               <div style={{ marginBottom: 16 }}>
                 <ContainerSelect T={T} mode={editForm.mode}
                   containerType={editForm.containerTypeId} containerCount={editForm.containerCount}
                   onTypeChange={val => setField("containerTypeId", val)} onCountChange={val => setField("containerCount", val)} />
               </div>
-
-              {/* Vessel / Voyage */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <div><label style={labelStyle}>Vessel / Vehicle</label><input value={editForm.vessel} onChange={e => setField("vessel", e.target.value)} style={inputStyle} /></div>
                 <div><label style={labelStyle}>Voyage / Flight No.</label><input value={editForm.voyage} onChange={e => setField("voyage", e.target.value)} style={inputStyle} /></div>
               </div>
-
-              {/* Routing */}
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Routing</label>
                 <input value={editForm.routing} onChange={e => setField("routing", e.target.value)} placeholder="e.g. Helsinki → Rotterdam → Houston" style={inputStyle} />
               </div>
-
-              {/* Dates */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <div><label style={labelStyle}>ETD</label><input type="date" value={editForm.etd} onChange={e => setField("etd", e.target.value)} style={inputStyle} /></div>
                 <div><label style={labelStyle}>ETA</label><input type="date" value={editForm.eta} onChange={e => setField("eta", e.target.value)} style={inputStyle} /></div>
@@ -365,40 +435,47 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
         {/* ===== DOCUMENTS TAB ===== */}
         {tab === "documents" && <DocumentsTab T={T} shipment={shipment} onDocumentAdded={onUpdate} />}
 
-        {/* ===== TRACKING TAB ===== */}
-        {tab === "tracking" && <TrackingTab T={T} shipment={shipment} onUpdate={onUpdate} />}
-
-        {/* ===== MILESTONES TAB (view mode) ===== */}
+        {/* ===== MILESTONES TAB (view) ===== */}
         {tab === "milestones" && !editing && (
           <div style={{ maxWidth: 540 }}>
-            {milestones.map((m, i) => { const d = daysUntil(m.date);
+            {milestones.map((m, i) => {
+              const d = daysUntil(m.date);
               const isFirstUndone = !m.done && (i === 0 || milestones[i - 1].done);
-              return <div key={m.id} style={{ display: "flex", gap: 16 }}>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                  <button onClick={() => onToggleMilestone(shipment.id, m.id)} style={{ cursor: "pointer", color: m.done ? T.green : T.text3, background: "none", border: "none", padding: 0 }}>{m.done ? <CheckCircle2 size={24} /> : <Circle size={24} />}</button>
-                  {i < milestones.length - 1 && <div style={{ width: 2, flex: 1, background: m.done ? T.greenBorder : T.border1, minHeight: 32 }} />}
-                </div>
-                <div style={{ paddingBottom: 24, flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: m.done ? T.text3 : T.text0 }}>{m.label}</div>
-                    {!m.done && i > 0 && !milestones[i - 1].done && (
-                      <button onClick={async () => {
-                        const { updateShipment: us } = await import("../db/schema.js");
-                        const updated = milestones.map((ms, idx) => idx <= i ? { ...ms, done: true } : ms);
-                        await us(shipment.id, { milestones: updated });
-                        if (onUpdate) onUpdate();
-                      }}
-                        style={{ fontSize: 11, padding: "3px 8px", borderRadius: 4, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: "pointer", fontWeight: 500 }}>
-                        Mark all up to here
-                      </button>
-                    )}
+              return (
+                <div key={m.id} style={{ display: "flex", gap: 16 }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                    <button onClick={() => onToggleMilestone(shipment.id, m.id)} style={{ cursor: "pointer", color: m.done ? T.green : T.text3, background: "none", border: "none", padding: 0 }}>
+                      {m.done ? <CheckCircle2 size={24} /> : <Circle size={24} />}
+                    </button>
+                    {i < milestones.length - 1 && <div style={{ width: 2, flex: 1, background: m.done ? T.greenBorder : T.border1, minHeight: 32 }} />}
                   </div>
-                  <div style={{ fontSize: 12, color: T.text3 }}>
-                    {m.date ? fmtDate(m.date) : "TBD"}
-                    {d !== null && !m.done && d >= 0 && d <= 7 && <span style={{ marginLeft: 8, fontWeight: 700, color: d <= 2 ? T.red : T.amber }}>({d === 0 ? "today" : `in ${d} days`})</span>}
+                  <div style={{ paddingBottom: 24, flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: m.done ? T.text3 : T.text0 }}>{m.label}</div>
+                      {!m.done && i > 0 && !milestones[i - 1].done && (
+                        <button onClick={async () => {
+                          const { updateShipment: us } = await import("../db/schema.js");
+                          const updated = milestones.map((ms, idx) => idx <= i ? { ...ms, done: true } : ms);
+                          await us(shipment.id, { milestones: updated });
+                          if (onUpdate) onUpdate();
+                        }}
+                          style={{ fontSize: 11, padding: "3px 8px", borderRadius: 4, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: "pointer", fontWeight: 500 }}>
+                          Mark all up to here
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.text3 }}>
+                      {m.date ? fmtDate(m.date) : "TBD"}
+                      {d !== null && !m.done && d >= 0 && d <= 7 && (
+                        <span style={{ marginLeft: 8, fontWeight: 700, color: d <= 2 ? T.red : T.amber }}>
+                          ({d === 0 ? "today" : `in ${d} days`})
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>; })}
+              );
+            })}
           </div>
         )}
 
@@ -410,7 +487,6 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                 <Settings size={14} color={T.accent} />
                 <span style={{ fontSize: 13, fontWeight: 600, color: T.accent }}>Editing Milestones</span>
               </div>
-
               {editMilestones.map((m, i) => (
                 <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "8px 0", borderBottom: i < editMilestones.length - 1 ? `1px solid ${T.border0}` : "none" }}>
                   <div style={{ width: 28, display: "flex", justifyContent: "center" }}>
@@ -418,18 +494,16 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                       {m.done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
                     </button>
                   </div>
-                  <input value={m.label} onChange={e => updateMilestone(m.id, "label", e.target.value)} placeholder="Milestone name"
-                    style={{ ...inputStyle, flex: 1 }} />
-                  <input type="date" value={m.date || ""} onChange={e => updateMilestone(m.id, "date", e.target.value || null)}
-                    style={{ ...inputStyle, width: 160 }} />
+                  <input value={m.label} onChange={e => updateMilestone(m.id, "label", e.target.value)} placeholder="Milestone name" style={{ ...inputStyle, flex: 1 }} />
+                  <input type="date" value={m.date || ""} onChange={e => updateMilestone(m.id, "date", e.target.value || null)} style={{ ...inputStyle, width: 160 }} />
                   <button onClick={() => removeMilestone(m.id)}
                     style={{ background: "none", border: "none", cursor: "pointer", color: T.text3, padding: 4 }}
-                    onMouseEnter={e => e.currentTarget.style.color = T.red} onMouseLeave={e => e.currentTarget.style.color = T.text3}>
+                    onMouseEnter={e => e.currentTarget.style.color = T.red}
+                    onMouseLeave={e => e.currentTarget.style.color = T.text3}>
                     <Trash2 size={14} />
                   </button>
                 </div>
               ))}
-
               <button onClick={addMilestone}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500, color: T.accent, background: "none", border: `1px dashed ${T.border2}`, cursor: "pointer", marginTop: 8 }}>
                 <Plus size={14} /> Add Milestone

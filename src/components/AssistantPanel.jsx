@@ -1,8 +1,8 @@
 // AssistantPanel.jsx — Slide-in AI chat panel
-// Props: shipments, projects, quotes, rates, isDark, onClose, onNavigate(id), onDataChange
+// Props: shipments, projects, quotes, rates, isDark, onClose, onNavigate(id), onDataChange, selectedShipment
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, Send, Paperclip, Zap, ZapOff, Bot, User, CheckCircle2, XCircle, AlertTriangle, Loader } from 'lucide-react';
+import { X, Send, Paperclip, Zap, Bot, User, CheckCircle2, XCircle, AlertTriangle, Loader, Settings } from 'lucide-react';
 import { buildSystemPrompt, getAiWorkerUrl } from '../utils/assistantContext.js';
 import { TOOLS, executeTool, describeToolCall } from '../utils/assistantTools.js';
 import { extractTextFromPDF } from '../parsers/pdfParser.js';
@@ -191,17 +191,20 @@ function MessageBubble({ msg, T, onNavigate, onConfirm, onDecline }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function AssistantPanel({ shipments = [], projects = [], quotes = [], rates = {}, isDark = true, onClose, onNavigate, onDataChange }) {
+export default function AssistantPanel({ shipments = [], projects = [], quotes = [], rates = {}, isDark = true, onClose, onNavigate, onDataChange, selectedShipment = null }) {
   const T = getT(isDark);
   const [messages, setMessages]       = useState([]);
   const [input, setInput]             = useState('');
   const [busy, setBusy]               = useState(false);
   const [confirmMode, setConfirmMode] = useState(getConfirmMode());
   const [dragOver, setDragOver]       = useState(false);
-  const [pendingDoc, setPendingDoc]   = useState(null); // { name, text } extracted doc context
+  const [pendingDoc, setPendingDoc]   = useState(null);
   const bottomRef   = useRef(null);
   const inputRef    = useRef(null);
-  const historyRef  = useRef([]); // raw Anthropic message history
+  const historyRef  = useRef([]);
+
+  const workerUrl = getAiWorkerUrl();
+  const hasWorker = !!workerUrl;
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -513,22 +516,53 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
         onDrop={handleDrop}
       >
         {messages.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '48px 24px', color: T.text3 }}>
-            <Bot size={32} color={T.border2} style={{ marginBottom: 12 }} />
-            <div style={{ fontSize: 14, fontWeight: 600, color: T.text2, marginBottom: 8 }}>How can I help?</div>
-            <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-              Ask about shipments, create records,<br />
-              drop a document, or request a summary.
+          <div style={{ padding: '24px 16px', color: T.text3 }}>
+
+            {/* No worker URL warning */}
+            {!hasWorker && (
+              <div style={{ padding: '12px 14px', borderRadius: 10, background: T.amberBg, border: `1px solid ${T.amberBorder}`, marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <AlertTriangle size={15} color={T.amber} style={{ flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: T.amber, marginBottom: 4 }}>AI worker not configured</div>
+                  <div style={{ fontSize: 12, color: T.amber, opacity: 0.85, lineHeight: 1.6 }}>
+                    Go to <strong>Settings → AI Assistant</strong> and paste your Cloudflare Worker URL to get started.
+                  </div>
+                  <button onClick={onClose} style={{ marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, color: T.amber, background: 'transparent', border: `1px solid ${T.amberBorder}`, cursor: 'pointer' }}>
+                    <Settings size={11} /> Open Settings
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Greeting */}
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <Bot size={28} color={T.border2} style={{ marginBottom: 10 }} />
+              <div style={{ fontSize: 14, fontWeight: 600, color: T.text2, marginBottom: 6 }}>How can I help?</div>
+              <div style={{ fontSize: 12, lineHeight: 1.7 }}>
+                Ask questions, create records, or drop a document.
+              </div>
             </div>
-            <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {[
+
+            {/* Context-aware prompts */}
+            <div style={{ marginBottom: 10, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: T.text3 }}>
+              {selectedShipment ? `Suggestions for ${selectedShipment.ref || selectedShipment.customerRef || 'this shipment'}` : 'Suggestions'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {(selectedShipment ? [
+                `What is the current status of ${selectedShipment.ref || selectedShipment.customerRef}?`,
+                `Are there any overdue milestones on ${selectedShipment.ref || selectedShipment.customerRef}?`,
+                `Write a customer status update for ${selectedShipment.customerRef || selectedShipment.ref}`,
+                `What is the margin on ${selectedShipment.ref || selectedShipment.customerRef}?`,
+              ] : [
                 "What's the status of all active shipments?",
                 "Which shipments have overdue milestones?",
+                "Which delivered shipments have billing pending?",
+                "What's the total margin across all projects?",
+                "Write a customer status update for the USGOLD project",
                 "Create a shipment Helsinki → Houston, 1×40HC",
-                "What was our margin on the USGOLD project?",
-              ].map(s => (
+              ]).map(s => (
                 <button key={s} onClick={() => { setInput(s); inputRef.current?.focus(); }}
-                  style={{ padding: '7px 12px', borderRadius: 8, fontSize: 12, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: 'pointer', textAlign: 'left' }}>
+                  style={{ padding: '7px 12px', borderRadius: 8, fontSize: 12, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: 'pointer', textAlign: 'left', lineHeight: 1.4 }}>
                   {s}
                 </button>
               ))}

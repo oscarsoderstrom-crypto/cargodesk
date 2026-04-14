@@ -138,7 +138,7 @@ export default function App(){
   const[shipments,setShipments]=useState([]);const[projects,setProjects]=useState([]);const[loading,setLoading]=useState(true);
   const[rates,setRates]=useState(FALLBACK_RATES);const[currentMode,setCurrentMode]=useState(getMode());
   const[dismissed,setDismissedState]=useState(getDismissed());const[contextMenu,setContextMenu]=useState(null);
-  const[activities,setActivities]=useState([]);const[templates,setTemplates]=useState([]);
+  const[activities,setActivities]=useState([]);const[templates,setTemplates]=useState([]);const[quotes,setQuotes]=useState([]);
   // Phase C state
   const[showMorningBrief,setShowMorningBrief]=useState(false);
   const[showMonthlyReport,setShowMonthlyReport]=useState(false);
@@ -151,6 +151,8 @@ export default function App(){
       await initDB();
       const[s,p,a,t]=await Promise.all([getShipments(),getProjects(),getActivities(50),getTemplates()]);
       setShipments(s);setProjects(p);setActivities(a);setTemplates(t);setExp(p.map(pr=>pr.id));
+      // Load quotes if table exists
+      try{const db=await import("./db/schema.js").then(m=>m.getDB());if(db.quotes){const q=await db.quotes.toArray();setQuotes(q);}}catch{}
       // Phase C: show morning brief once per day after data loads
       if(shouldShowBrief())setShowMorningBrief(true);
     }
@@ -252,7 +254,7 @@ export default function App(){
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px",background:T.bg2,borderBottom:`1px solid ${T.border1}`,minHeight:56,position:"relative"}}>
         <div style={{display:"flex",alignItems:"center",gap:12,flex:1}}>
           <div style={{position:"relative",maxWidth:360,flex:1}}><Search size={16} style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:T.text3}}/><input type="text" placeholder="Search shipments, projects, carriers…" value={q} onChange={e=>setQ(e.target.value)} style={{width:"100%",padding:"8px 16px 8px 40px",borderRadius:8,fontSize:14,border:`1px solid ${T.border1}`,outline:"none",background:T.bg3,color:T.text0}}/></div>
-          {tab==="dashboard"&&!projectView&&!sel&&<><div style={{display:"flex",gap:4,marginLeft:8,background:T.bg3,borderRadius:8,padding:3,border:`1px solid ${T.border0}`}}>{["all","planned","booked","in_transit","delivered"].map(s=><div key={s} onClick={()=>setFilt(s)} style={{padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:500,background:filt===s?T.bg4:"transparent",color:filt===s?T.text0:T.text3,cursor:"pointer"}}>{s==="all"?"All":SC[s]?.label||s}</div>)}</div><SortFilterBar T={T} sortBy={sortBy} onSortChange={setSortBy}/></>}</div>
+          {tab==="dashboard"&&!projectView&&!sel&&<><SortFilterBar T={T} sortBy={sortBy} onSortChange={setSortBy}/></>}</div>
         <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:16}}>
           <div onClick={()=>setNotif(!notif)} style={{position:"relative",padding:8,borderRadius:8,color:T.text2,cursor:"pointer"}}><Bell size={20}/>{activeNotifCount>0&&<span style={{position:"absolute",top:4,right:4,width:16,height:16,borderRadius:"50%",background:T.red,color:"white",fontSize:10,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{activeNotifCount}</span>}</div>
           <div onClick={handleNewShipment} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,fontSize:14,fontWeight:500,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer"}}><Plus size={16}/> New Shipment</div></div>
@@ -264,7 +266,7 @@ export default function App(){
         :tab==="financials"?<FinView shipments={shipments} projects={projects} rates={rates} onExport={()=>setShowExport(true)} onMonthlyReport={()=>setShowMonthlyReport(true)}/>
         :<>
           <div style={{flex:1,overflow:"auto",padding:24}}>
-            <StatusSummary T={T} shipments={shipments} statusCfg={SC} onFilterClick={setFilt}/>
+            <StatusSummary T={T} shipments={shipments} statusCfg={SC} onFilterClick={setFilt} activeFilter={filt}/>
             {projects.map((p,pi)=>{const ps=filtered.filter(s=>s.projectId===p.id);if(!ps.length)return null;const isExp=exp.includes(p.id);const pc=getProjectColor(p,pi);
               return<div key={p.id} style={{marginBottom:16}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:8,cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background=T.bg3} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
@@ -285,9 +287,9 @@ export default function App(){
     {showExport&&<ExportDialog T={T} shipments={shipments} projects={projects} rates={rates} onClose={()=>setShowExport(false)}/>}
     {contextMenu&&<ShipmentContextMenu T={T} x={contextMenu.x} y={contextMenu.y} shipment={contextMenu.shipment} onClose={()=>setContextMenu(null)} onStatusChange={handleStatusChange} onDelete={handleDeleteShipment} onDuplicate={handleDuplicate}/>}
     {/* Phase C modals */}
-    {showMorningBrief&&<MorningBrief shipments={shipments} quotes={[]} isDark={isDark} onClose={()=>setShowMorningBrief(false)} onNavigate={id=>{setSel(id);setProjectView(null);setShowMorningBrief(false);}}/>}
+    {showMorningBrief&&<MorningBrief shipments={shipments} quotes={quotes} isDark={isDark} onClose={()=>setShowMorningBrief(false)} onNavigate={id=>{setSel(id);setProjectView(null);setShowMorningBrief(false);}}/>}
     {showMonthlyReport&&<MonthlyReportModal shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowMonthlyReport(false)}/>}
     {showWeeklyReport&&<WeeklySnapshotReport shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowWeeklyReport(false)} onNavigate={id=>{setSel(id);setProjectView(null);}}/>}
     {/* Phase D: AI Assistant */}
-    {showAssistant&&<AssistantPanel shipments={shipments} projects={projects} quotes={[]} rates={rates} isDark={isDark} onClose={()=>setShowAssistant(false)} onNavigate={id=>{setSel(id);setProjectView(null);setTab("dashboard");}} onDataChange={loadData}/>}
+    {showAssistant&&<AssistantPanel shipments={shipments} projects={projects} quotes={quotes} rates={rates} isDark={isDark} onClose={()=>setShowAssistant(false)} onNavigate={id=>{setSel(id);setProjectView(null);setTab("dashboard");}} onDataChange={loadData} selectedShipment={sel ? shipments.find(s=>s.id===sel) : null}/>}
   </div></ThemeCtx.Provider>;}
