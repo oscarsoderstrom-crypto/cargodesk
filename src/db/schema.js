@@ -1,40 +1,50 @@
 import Dexie from 'dexie';
+import * as cloud from './appwrite.js';
 
+// ─── Mode (test / production) ─────────────────────────────────────────────────
 const MODE_KEY = 'cargodesk_mode';
 export function getMode() { try { return localStorage.getItem(MODE_KEY) || 'test'; } catch { return 'test'; } }
 export function setMode(mode) { try { localStorage.setItem(MODE_KEY, mode); } catch {} }
 
+// ─── Data source (local / cloud) ──────────────────────────────────────────────
+export function getDbSource() { return cloud.getDbSource(); }
+export function setDbSource(s) { cloud.setDbSource(s); }
+function isCloud() { return cloud.getDbSource() === 'cloud'; }
+
+// ─── Local IndexedDB setup ────────────────────────────────────────────────────
+
 function createDB(name) {
   const db = new Dexie(name);
   db.version(3).stores({
-    projects: 'id, name, customer, status',
+    projects:  'id, name, customer, status',
     shipments: 'id, ref, projectId, customerRef, mode, status, origin, destination, carrier, etd, eta, updatedAt',
     documents: 'id, shipmentId, name, type, date, quoteNumber, bookingNumber',
-    activities: 'id, shipmentId, type, timestamp',
+    activities:'id, shipmentId, type, timestamp',
     templates: 'id, name, mode',
   });
   db.version(4).stores({
-    projects: 'id, name, customer, status',
+    projects:  'id, name, customer, status',
     shipments: 'id, ref, projectId, customerRef, mode, status, origin, destination, carrier, etd, eta, updatedAt',
     documents: 'id, shipmentId, name, type, date, quoteNumber, bookingNumber',
-    activities: 'id, shipmentId, type, timestamp',
+    activities:'id, shipmentId, type, timestamp',
     templates: 'id, name, mode',
-    quotes: 'id, shipmentId, carrier, origin, destination, createdAt, validUntil',
+    quotes:    'id, shipmentId, carrier, origin, destination, createdAt, validUntil',
   });
   return db;
 }
 
 const databases = {
   production: createDB('CargoDesk'),
-  test: createDB('CargoDesk_test'),
+  test:       createDB('CargoDesk_test'),
 };
 
 export function getDB() { return databases[getMode()] || databases.test; }
 
-// ---- SEED DATA ----
+// ─── Seed data ────────────────────────────────────────────────────────────────
+
 const SEED_PROJECTS = [
-  { id: "p1", name: "USGOLD", customer: "US Gold Mining Corp", status: "active", colorId: "blue" },
-  { id: "p2", name: "NORDPULP", customer: "Nordic Pulp & Paper", status: "active", colorId: "emerald" },
+  { id: "p1", name: "USGOLD",   customer: "US Gold Mining Corp",   status: "active", colorId: "blue"    },
+  { id: "p2", name: "NORDPULP", customer: "Nordic Pulp & Paper",   status: "active", colorId: "emerald" },
 ];
 
 const SEED_SHIPMENTS = [
@@ -55,12 +65,13 @@ const SEED_SHIPMENTS = [
     costs:{quoted:7200,items:[{id:"c1",category:"transport",desc:"Ocean freight (Hapag-Lloyd quote)",amount:5800,currency:"EUR"},{id:"c2",category:"origin",desc:"Pickup + stuffing + THC",amount:1100,currency:"EUR"}],running:[]},notes:[]},
   { id:"s6",ref:"S2600000128",projectId:"p2",customerRef:"NORDPULP 2",mode:"truck",status:"in_transit",origin:"Kotka, FI",destination:"Stockholm, SE",vessel:"—",voyage:"—",carrier:"DSV Road",routing:"Kotka → Turku (ferry) → Stockholm",etd:"2026-03-29",eta:"2026-03-31",containerType:"Full truck load",updatedAt:new Date().toISOString(),
     milestones:[{id:"m1",label:"Cargo Ready",date:"2026-03-28",done:true},{id:"m2",label:"Pickup",date:"2026-03-29",done:true},{id:"m3",label:"Ferry Turku-Stockholm",date:"2026-03-30",done:false},{id:"m4",label:"Delivered Stockholm",date:"2026-03-31",done:false}],
-    costs:{quoted:2800,items:[{id:"c1",category:"transport",desc:"FTL Kotka-Stockholm via DSV",amount:2200,currency:"EUR"},{id:"c2",category:"transport",desc:"Ferry crossing",amount:380,currency:"EUR"}],
-      running:[{id:"r1",desc:"Waiting time at origin",dailyRate:450,currency:"EUR",startDate:"2026-03-28",status:"stopped",endDate:"2026-03-29",totalDays:1}]},notes:[]},
+    costs:{quoted:2800,items:[{id:"c1",category:"transport",desc:"FTL Kotka-Stockholm via DSV",amount:2200,currency:"EUR"},{id:"c2",category:"transport",desc:"Ferry crossing",amount:380,currency:"EUR"}],running:[{id:"r1",desc:"Waiting time at origin",dailyRate:450,currency:"EUR",startDate:"2026-03-28",status:"stopped",endDate:"2026-03-29",totalDays:1}]},notes:[]},
 ];
 
-// ---- INIT ----
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
 export async function initDB() {
+  if (isCloud()) return; // Cloud needs no local init
   const db = getDB();
   const count = await db.shipments.count();
   if (count === 0 && getMode() === 'test') {
@@ -69,30 +80,54 @@ export async function initDB() {
   }
 }
 
-// ---- PROJECTS ----
-export async function getProjects() { return getDB().projects.toArray(); }
-export async function addProject(project) { return getDB().projects.add(project); }
-export async function updateProject(id, changes) { return getDB().projects.update(id, changes); }
-export async function deleteProject(id) { return getDB().projects.delete(id); }
+// ─── PROJECTS ─────────────────────────────────────────────────────────────────
 
-// ---- SHIPMENTS (with auto updatedAt) ----
-export async function getShipments() { return getDB().shipments.toArray(); }
-export async function getShipment(id) { return getDB().shipments.get(id); }
+export async function getProjects() {
+  if (isCloud()) return cloud.getProjects();
+  return getDB().projects.toArray();
+}
+export async function addProject(project) {
+  if (isCloud()) return cloud.addProject(project);
+  return getDB().projects.add(project);
+}
+export async function updateProject(id, changes) {
+  if (isCloud()) return cloud.updateProject(id, changes);
+  return getDB().projects.update(id, changes);
+}
+export async function deleteProject(id) {
+  if (isCloud()) return cloud.deleteProject(id);
+  return getDB().projects.delete(id);
+}
+
+// ─── SHIPMENTS ────────────────────────────────────────────────────────────────
+
+export async function getShipments() {
+  if (isCloud()) return cloud.getShipments();
+  return getDB().shipments.toArray();
+}
+export async function getShipment(id) {
+  if (isCloud()) return cloud.getShipment(id);
+  return getDB().shipments.get(id);
+}
 export async function addShipment(shipment) {
+  if (isCloud()) return cloud.addShipment(shipment);
   shipment.updatedAt = new Date().toISOString();
   return getDB().shipments.add(shipment);
 }
 export async function updateShipment(id, changes) {
+  if (isCloud()) return cloud.updateShipment(id, changes);
   changes.updatedAt = new Date().toISOString();
   return getDB().shipments.update(id, changes);
 }
 export async function deleteShipment(id) {
+  if (isCloud()) return cloud.deleteShipment(id);
   const db = getDB();
   await db.documents.where('shipmentId').equals(id).delete();
   await db.activities.where('shipmentId').equals(id).delete();
   return db.shipments.delete(id);
 }
 export async function getNextRef() {
+  if (isCloud()) return cloud.getNextRef();
   const all = await getDB().shipments.toArray();
   const year = new Date().getFullYear().toString().slice(2);
   let maxNum = 0;
@@ -100,6 +135,7 @@ export async function getNextRef() {
   return `S${year}${(maxNum + 1).toString().padStart(8, '0')}`;
 }
 export async function toggleMilestone(shipmentId, milestoneId) {
+  if (isCloud()) return cloud.toggleMilestone(shipmentId, milestoneId);
   const db = getDB();
   const shipment = await db.shipments.get(shipmentId);
   if (!shipment) return;
@@ -107,44 +143,67 @@ export async function toggleMilestone(shipmentId, milestoneId) {
   return db.shipments.update(shipmentId, { milestones, updatedAt: new Date().toISOString() });
 }
 
-// ---- DOCUMENTS ----
-export async function getDocuments(shipmentId) { return getDB().documents.where('shipmentId').equals(shipmentId).toArray(); }
-export async function getAllDocuments() { return getDB().documents.toArray(); }
-export async function addDocument(doc) { return getDB().documents.add(doc); }
-export async function deleteDocument(id) { return getDB().documents.delete(id); }
+// ─── DOCUMENTS ────────────────────────────────────────────────────────────────
 
-// ---- ACTIVITIES ----
-export async function addActivity(activity) { return getDB().activities.add(activity); }
+export async function getDocuments(shipmentId) {
+  if (isCloud()) return cloud.getDocuments(shipmentId);
+  return getDB().documents.where('shipmentId').equals(shipmentId).toArray();
+}
+export async function getAllDocuments() {
+  if (isCloud()) return cloud.getAllDocuments();
+  return getDB().documents.toArray();
+}
+export async function addDocument(doc) {
+  if (isCloud()) return cloud.addDocument(doc);
+  return getDB().documents.add(doc);
+}
+export async function deleteDocument(id) {
+  if (isCloud()) return cloud.deleteDocument(id);
+  return getDB().documents.delete(id);
+}
+
+// ─── ACTIVITIES ───────────────────────────────────────────────────────────────
+
+export async function addActivity(activity) {
+  if (isCloud()) return cloud.addActivity(activity);
+  return getDB().activities.add(activity);
+}
 export async function getActivities(limit = 50) {
+  if (isCloud()) return cloud.getActivities(limit);
   return getDB().activities.orderBy('timestamp').reverse().limit(limit).toArray();
 }
 export async function getShipmentActivities(shipmentId) {
+  if (isCloud()) return cloud.getShipmentActivities(shipmentId);
   return getDB().activities.where('shipmentId').equals(shipmentId).toArray();
 }
 
-// ---- TEMPLATES ----
-export async function getTemplates() { return getDB().templates.toArray(); }
-export async function addTemplate(template) { return getDB().templates.add(template); }
-export async function deleteTemplate(id) { return getDB().templates.delete(id); }
+// ─── TEMPLATES ────────────────────────────────────────────────────────────────
 
-// ---- QUOTES ----
-export async function getQuotes() { return getDB().quotes.toArray(); }
-export async function addQuote(quote) { return getDB().quotes.add(quote); }
-export async function updateQuote(id, changes) { return getDB().quotes.update(id, changes); }
-export async function deleteQuote(id) { return getDB().quotes.delete(id); }
-export async function getShipmentQuotes(shipmentId) { return getDB().quotes.where('shipmentId').equals(shipmentId).toArray(); }
+export async function getTemplates() {
+  if (isCloud()) return cloud.getTemplates();
+  return getDB().templates.toArray();
+}
+export async function addTemplate(template) {
+  if (isCloud()) return cloud.addTemplate(template);
+  return getDB().templates.add(template);
+}
+export async function deleteTemplate(id) {
+  if (isCloud()) return cloud.deleteTemplate(id);
+  return getDB().templates.delete(id);
+}
 
-// ---- BACKUP ----
+// ─── BACKUP (local only — export/import always uses IndexedDB) ────────────────
+
 export async function exportData(password) {
   const db = getDB();
   const data = {
     version: 4, mode: getMode(), exportedAt: new Date().toISOString(),
-    projects: await db.projects.toArray(),
-    shipments: await db.shipments.toArray(),
-    documents: (await db.documents.toArray()).map(d => ({ ...d, base64Data: undefined })),
+    projects:   await db.projects.toArray(),
+    shipments:  await db.shipments.toArray(),
+    documents:  (await db.documents.toArray()).map(d => ({ ...d, base64Data: undefined })),
     activities: await db.activities.toArray(),
-    templates: await db.templates.toArray(),
-    quotes: await db.quotes.toArray(),
+    templates:  await db.templates.toArray(),
+    quotes:     db.quotes ? await db.quotes.toArray() : [],
   };
   const json = JSON.stringify(data);
   if (!password) return json;
@@ -173,19 +232,18 @@ export async function importData(input, password) {
   }
   if (!data.projects || !data.shipments) throw new Error('Invalid backup format.');
   const db = getDB();
-  await db.projects.clear(); await db.shipments.clear(); await db.documents.clear(); await db.activities.clear(); await db.templates.clear(); await db.quotes.clear();
-  if (data.projects.length) await db.projects.bulkAdd(data.projects);
-  if (data.shipments.length) await db.shipments.bulkAdd(data.shipments);
-  if (data.documents?.length) await db.documents.bulkAdd(data.documents);
+  await db.projects.clear(); await db.shipments.clear(); await db.documents.clear(); await db.activities.clear(); await db.templates.clear();
+  if (data.projects.length)    await db.projects.bulkAdd(data.projects);
+  if (data.shipments.length)   await db.shipments.bulkAdd(data.shipments);
+  if (data.documents?.length)  await db.documents.bulkAdd(data.documents);
   if (data.activities?.length) await db.activities.bulkAdd(data.activities);
-  if (data.templates?.length) await db.templates.bulkAdd(data.templates);
-  if (data.quotes?.length) await db.quotes.bulkAdd(data.quotes);
+  if (data.templates?.length)  await db.templates.bulkAdd(data.templates);
   return { projects: data.projects.length, shipments: data.shipments.length, documents: data.documents?.length || 0 };
 }
 
 export async function resetDB() {
   const db = getDB();
-  await db.shipments.clear(); await db.projects.clear(); await db.documents.clear(); await db.activities.clear(); await db.templates.clear(); await db.quotes.clear(); await db.quotes.clear();
+  await db.shipments.clear(); await db.projects.clear(); await db.documents.clear(); await db.activities.clear(); await db.templates.clear();
   if (getMode() === 'test') { await db.projects.bulkAdd(SEED_PROJECTS); await db.shipments.bulkAdd(SEED_SHIPMENTS); }
 }
 

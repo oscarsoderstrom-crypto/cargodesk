@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation, Bot } from "lucide-react";
-import { exportData, importData, resetDB, getMode, setMode } from "../db/schema.js";
+import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation, Bot, Database, Cloud, HardDrive } from "lucide-react";
+import { exportData, importData, resetDB, getMode, setMode, getDbSource, setDbSource } from "../db/schema.js";
 import { getWorkerUrl, setWorkerUrl } from "../utils/tracking.js";
 import { getAiWorkerUrl, setAiWorkerUrl } from "../utils/assistantContext.js";
+import { getAppwriteConfig, setAppwriteConfig, testConnection, migrateFromLocal, resetClient } from "../db/appwrite.js";
 
 export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }) {
   const [activeSection, setActiveSection] = useState("mode");
@@ -21,6 +22,16 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
   const [aiWorkerUrl, setAiWorkerUrlInput] = useState(getAiWorkerUrl());
   const [aiTestResult, setAiTestResult] = useState(null);
   const [aiTesting, setAiTesting] = useState(false);
+
+  // Database / Appwrite
+  const awCfg = getAppwriteConfig();
+  const [dbSource, setDbSourceState] = useState(getDbSource());
+  const [awEndpoint,   setAwEndpoint]   = useState(awCfg.endpoint);
+  const [awProjectId,  setAwProjectId]  = useState(awCfg.projectId);
+  const [awDatabaseId, setAwDatabaseId] = useState(awCfg.databaseId);
+  const [dbTestResult, setDbTestResult] = useState(null);
+  const [dbTesting,    setDbTesting]    = useState(false);
+  const [migrating,    setMigrating]    = useState(false);
 
   const currentMode = getMode();
 
@@ -150,13 +161,63 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
     }
   };
 
+  // ── Database handlers ────────────────────────────────────────────────────────
+
+  const handleSaveDbConfig = () => {
+    setAppwriteConfig({ endpoint: awEndpoint.trim(), projectId: awProjectId.trim(), databaseId: awDatabaseId.trim() });
+    resetClient();
+    showMessage("success", "Appwrite config saved.");
+    setDbTestResult(null);
+  };
+
+  const handleTestDb = async () => {
+    setDbTesting(true);
+    setDbTestResult({ ok: null, message: "Testing…" });
+    const result = await testConnection();
+    setDbTestResult(result);
+    setDbTesting(false);
+  };
+
+  const handleSwitchSource = async (source) => {
+    setDbSource(source);
+    setDbSourceState(source);
+    if (onDataChange) onDataChange();
+    showMessage("success", `Switched to ${source === 'cloud' ? 'Appwrite cloud' : 'local IndexedDB'}.`);
+  };
+
+  const handleMigrate = async () => {
+    setMigrating(true);
+    showMessage("success", "Migration started…");
+    try {
+      // Read from local IndexedDB
+      const { getDB } = await import("../db/schema.js");
+      const db = getDB();
+      const localData = {
+        projects:   await db.projects.toArray(),
+        shipments:  await db.shipments.toArray(),
+        activities: await db.activities.toArray(),
+        templates:  await db.templates.toArray(),
+        quotes:     db.quotes ? await db.quotes.toArray() : [],
+      };
+      const results = await migrateFromLocal(localData);
+      showMessage("success",
+        `Migrated: ${results.projects} projects, ${results.shipments} shipments, ${results.activities} activities, ${results.templates} templates, ${results.quotes} quotes.${results.errors.length ? ` (${results.errors.length} errors)` : ''}`
+      );
+    } catch (err) {
+      showMessage("error", `Migration failed: ${err.message}`);
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   // ── Sections ─────────────────────────────────────────────────────────────────
 
   const sections = [
-    { id: "mode",     label: "Mode" },
+    { id: "mode",     label: "Mode"         },
+    { id: "database", label: "Database"     },
     { id: "ai",       label: "AI Assistant" },
-    { id: "tracking", label: "Tracking" },
-    { id: "backup",   label: "Backup" },
+    { id: "tracking", label: "Tracking"     },
+    { id: "backup",   label: "Backup"       },
   ];
 
   return (
@@ -209,6 +270,84 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
               <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3 }}>
                 Switching modes instantly loads the other database. No data is shared or lost when switching.
               </div>
+            </div>
+          )}
+
+          {/* ── DATABASE ── */}
+          {activeSection === "database" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+                <Database size={18} color={T.accent} />
+                <div style={{ fontSize: 14, color: T.text1 }}>
+                  Switch between local IndexedDB and Appwrite cloud storage.
+                </div>
+              </div>
+
+              {/* Source toggle */}
+              <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+                {[
+                  { id: "local", label: "Local", sub: "IndexedDB in this browser", icon: HardDrive },
+                  { id: "cloud", label: "Cloud", sub: "Appwrite — synced across devices", icon: Cloud },
+                ].map(opt => (
+                  <div key={opt.id} onClick={() => handleSwitchSource(opt.id)}
+                    style={{ flex: 1, padding: 16, borderRadius: 10, cursor: "pointer", textAlign: "center",
+                      background: dbSource === opt.id ? T.accentGlow : T.bg3,
+                      border: `1px solid ${dbSource === opt.id ? T.accent : T.border1}`,
+                      transition: "all 0.15s" }}>
+                    <opt.icon size={20} color={dbSource === opt.id ? T.accent : T.text3} style={{ marginBottom: 6 }} />
+                    <div style={{ fontSize: 14, fontWeight: 700, color: dbSource === opt.id ? T.accent : T.text1 }}>{opt.label}</div>
+                    <div style={{ fontSize: 11, color: T.text3, marginTop: 2 }}>{opt.sub}</div>
+                    {dbSource === opt.id && <div style={{ fontSize: 11, fontWeight: 700, color: T.accent, marginTop: 6 }}>● ACTIVE</div>}
+                  </div>
+                ))}
+              </div>
+
+              {/* Appwrite config */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>API Endpoint</label>
+                <input value={awEndpoint} onChange={e => setAwEndpoint(e.target.value)} style={inputStyle} placeholder="https://fra.cloud.appwrite.io/v1" />
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Project ID</label>
+                <input value={awProjectId} onChange={e => setAwProjectId(e.target.value)} style={{ ...inputStyle, fontFamily: "monospace" }} placeholder="69ddec6f0027dd4d58a2" />
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Database ID</label>
+                <input value={awDatabaseId} onChange={e => setAwDatabaseId(e.target.value)} style={{ ...inputStyle, fontFamily: "monospace" }} placeholder="69ddf5d500320ffd383d" />
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                <button onClick={handleSaveDbConfig}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: T.accent, border: "none", cursor: "pointer" }}>
+                  <CheckCircle2 size={14} /> Save Config
+                </button>
+                <button onClick={handleTestDb} disabled={dbTesting}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.text1, background: T.bg3, border: `1px solid ${T.border1}`, cursor: dbTesting ? "not-allowed" : "pointer", opacity: dbTesting ? 0.6 : 1 }}>
+                  <RefreshCw size={14} style={{ animation: dbTesting ? "spin 0.8s linear infinite" : "none" }} />
+                  {dbTesting ? "Testing…" : "Test Connection"}
+                </button>
+                <button onClick={handleMigrate} disabled={migrating}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.amber, background: T.amberBg, border: `1px solid ${T.amberBorder}`, cursor: migrating ? "not-allowed" : "pointer", opacity: migrating ? 0.6 : 1 }}>
+                  <Upload size={14} /> {migrating ? "Migrating…" : "Migrate Local → Cloud"}
+                </button>
+              </div>
+
+              {dbTestResult && (
+                <div style={{ padding: 12, borderRadius: 8, display: "flex", alignItems: "center", gap: 8, marginBottom: 16,
+                  background: dbTestResult.ok === true ? T.greenBg : dbTestResult.ok === false ? T.redBg : T.bg3,
+                  border: `1px solid ${dbTestResult.ok === true ? T.greenBorder : dbTestResult.ok === false ? T.redBorder : T.border1}`,
+                  color: dbTestResult.ok === true ? T.green : dbTestResult.ok === false ? T.red : T.text2, fontSize: 13 }}>
+                  {dbTestResult.ok === true  && <CheckCircle2 size={15} />}
+                  {dbTestResult.ok === false && <AlertTriangle size={15} />}
+                  {dbTestResult.ok === null  && <RefreshCw size={15} />}
+                  {dbTestResult.message}
+                </div>
+              )}
+
+              <div style={{ padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3, lineHeight: 1.7 }}>
+                <strong style={{ color: T.text2 }}>To migrate:</strong> Save config → Test Connection → click Migrate Local → Cloud → switch to Cloud mode.
+              </div>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
 
