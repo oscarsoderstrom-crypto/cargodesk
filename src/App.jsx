@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
-import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot } from "lucide-react";
-import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates } from "./db/schema.js";
+import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot, LogOut } from "lucide-react";
+import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates, getDbSource } from "./db/schema.js";
+import { getCurrentUser, logout } from "./db/auth.js";
+import { hasLocalPassword, hasActiveLocalSession, clearLocalSession } from "./utils/localAuth.js";
+import LoginScreen from "./components/LoginScreen.jsx";
 import NewShipmentModal from "./components/NewShipmentModal.jsx";
 import ShipmentDetail from "./components/ShipmentDetail.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -139,12 +142,30 @@ export default function App(){
   const[rates,setRates]=useState(FALLBACK_RATES);const[currentMode,setCurrentMode]=useState(getMode());
   const[dismissed,setDismissedState]=useState(getDismissed());const[contextMenu,setContextMenu]=useState(null);
   const[activities,setActivities]=useState([]);const[templates,setTemplates]=useState([]);const[quotes,setQuotes]=useState([]);
+  // Auth state
+  const[user,setUser]=useState(null);const[authChecked,setAuthChecked]=useState(false);
+  const[localUnlocked,setLocalUnlocked]=useState(false);
   // Phase C state
   const[showMorningBrief,setShowMorningBrief]=useState(false);
   const[showMonthlyReport,setShowMonthlyReport]=useState(false);
   const[showWeeklyReport,setShowWeeklyReport]=useState(false);
   // Phase D state
   const[showAssistant,setShowAssistant]=useState(false);
+
+  // Check existing session on mount
+  useEffect(()=>{
+    async function checkAuth(){
+      const source=getDbSource();
+      if(source==='cloud'){
+        const u=await getCurrentUser();
+        setUser(u);
+      } else {
+        setLocalUnlocked(hasActiveLocalSession());
+      }
+      setAuthChecked(true);
+    }
+    checkAuth();
+  },[]);
 
   const loadData=useCallback(async()=>{
     try{
@@ -219,6 +240,18 @@ export default function App(){
     await logActivity("document",`${file.name} added to ${cs?.ref||cs?.customerRef||"shipment"}`,shipmentId);}catch(err){console.error("Drop failed:",err);}}await loadData();};
   const handleContextMenu=(e,s)=>{e.preventDefault();setContextMenu({x:e.clientX,y:e.clientY,shipment:s});};
 
+  if(!authChecked)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:DARK.bg0}}><RefreshCw size={24} color={DARK.accent} style={{animation:"spin 1s linear infinite"}}/><style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style></div>;
+
+  // Cloud mode — require Appwrite login
+  if(getDbSource()==='cloud'&&!user){
+    return<LoginScreen isDark={isDark} mode="cloud" onLogin={u=>{setUser(u);loadData();}}/>;
+  }
+
+  // Local mode — require local password
+  if(getDbSource()==='local'&&!localUnlocked){
+    return<LoginScreen isDark={isDark} mode="local" hasPassword={hasLocalPassword()} onLogin={()=>{setLocalUnlocked(true);loadData();}}/>;
+  }
+
   if(loading)return<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg1}}><div style={{textAlign:"center"}}><RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite"}}/><div style={{marginTop:12,fontSize:14,color:T.text2}}>Loading CargoDesk...</div></div><style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style></div>;
 
   const isTest=currentMode==="test";
@@ -246,6 +279,16 @@ export default function App(){
       </nav>
       <div style={{padding:"0 12px",marginBottom:16}}><div style={{padding:16,borderRadius:12,background:"#161C2E",border:"1px solid #1A2236"}}><div style={{fontSize:12,fontWeight:500,marginBottom:4,color:"#4F5E78"}}>Active</div><div style={{fontSize:24,fontWeight:700,color:"#F1F5F9",fontFamily:"'JetBrains Mono',monospace"}}>{shipments.filter(s=>!["delivered","completed"].includes(s.status)).length}</div><div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,marginTop:4,color:"#3B82F6"}}><Ship size={12}/>{shipments.filter(s=>s.status==="in_transit").length} in transit</div></div></div>
       <div style={{padding:"0 12px 4px"}}><div onClick={()=>setShowSettings(true)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)",background:"rgba(255,255,255,0.04)",cursor:"pointer",color:"#8494B0",fontSize:13,fontWeight:500}}><Settings size={16}/> Settings</div></div>
+      {/* User / logout */}
+      {(user||localUnlocked)&&<div style={{padding:"0 12px 4px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",borderRadius:8}}>
+          <div style={{fontSize:11,color:"#4F5E78",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{user?user.email:"Local mode"}</div>
+          <button onClick={async()=>{
+            if(getDbSource()==='cloud'){await logout();setUser(null);}
+            else{clearLocalSession();setLocalUnlocked(false);}
+          }} title="Lock / Sign out" style={{background:"none",border:"none",color:"#4F5E78",cursor:"pointer",padding:4,flexShrink:0,display:"flex",alignItems:"center"}}><LogOut size={14}/></button>
+        </div>
+      </div>}
       <div style={{padding:"4px 12px 4px",fontSize:10,color:"#4F5E78",textAlign:"center"}}>Ctrl+N new • Esc back</div>
       <div style={{padding:"4px 12px 16px"}}><ThemeToggle isDark={isDark} onToggle={()=>setIsDark(!isDark)}/></div></div>
     {/* Main */}
@@ -283,7 +326,7 @@ export default function App(){
           <DeadlineSidebar shipments={shipments} onSelect={setSel} activities={activities} onActivityClick={id=>{setSel(id);setProjectView(null);}}/></>}</div></div>
     {/* Existing modals */}
     {showNewShipment&&<NewShipmentModal T={T} projects={projects} nextRef={nextRef} onSave={handleSaveShipment} onClose={()=>setShowNewShipment(false)} templates={templates} shipments={shipments}/>}
-    {showSettings&&<SettingsPanel T={T} onClose={()=>setShowSettings(false)} onModeChange={handleModeChange} onDataChange={loadData}/>}
+    {showSettings&&<SettingsPanel T={T} onClose={()=>setShowSettings(false)} onModeChange={handleModeChange} onDataChange={loadData} onCloudSwitch={()=>{setUser(null);setLocalUnlocked(false);setAuthChecked(false);setTimeout(()=>setAuthChecked(true),100);}}/>}
     {showExport&&<ExportDialog T={T} shipments={shipments} projects={projects} rates={rates} onClose={()=>setShowExport(false)}/>}
     {contextMenu&&<ShipmentContextMenu T={T} x={contextMenu.x} y={contextMenu.y} shipment={contextMenu.shipment} onClose={()=>setContextMenu(null)} onStatusChange={handleStatusChange} onDelete={handleDeleteShipment} onDuplicate={handleDuplicate}/>}
     {/* Phase C modals */}

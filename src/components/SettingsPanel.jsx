@@ -4,8 +4,9 @@ import { exportData, importData, resetDB, getMode, setMode, getDbSource, setDbSo
 import { getWorkerUrl, setWorkerUrl } from "../utils/tracking.js";
 import { getAiWorkerUrl, setAiWorkerUrl } from "../utils/assistantContext.js";
 import { getAppwriteConfig, setAppwriteConfig, testConnection, migrateFromLocal, resetClient } from "../db/appwrite.js";
+import { clearLocalPassword, hasLocalPassword } from "../utils/localAuth.js";
 
-export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }) {
+export default function SettingsPanel({ T, onClose, onModeChange, onDataChange, onCloudSwitch }) {
   const [activeSection, setActiveSection] = useState("mode");
   const [exportPassword, setExportPassword] = useState("");
   const [importPassword, setImportPassword] = useState("");
@@ -181,7 +182,11 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
   const handleSwitchSource = async (source) => {
     setDbSource(source);
     setDbSourceState(source);
-    if (onDataChange) onDataChange();
+    if (source === 'cloud' && onCloudSwitch) {
+      onCloudSwitch(); // triggers auth re-check in App.jsx
+    } else {
+      if (onDataChange) onDataChange();
+    }
     showMessage("success", `Switched to ${source === 'cloud' ? 'Appwrite cloud' : 'local IndexedDB'}.`);
   };
 
@@ -353,6 +358,17 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
               <div style={{ padding: 12, borderRadius: 8, background: T.bg3, border: `1px solid ${T.border1}`, fontSize: 12, color: T.text3, lineHeight: 1.7 }}>
                 <strong style={{ color: T.text2 }}>To migrate:</strong> Save config → Test Connection → click Migrate Local → Cloud → switch to Cloud mode.
               </div>
+              {/* Local password reset */}
+              {dbSource === 'local' && hasLocalPassword() && (
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${T.border1}` }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text0, marginBottom: 8 }}>Local Password</div>
+                  <button onClick={() => { if (window.confirm('Reset local password? You will be asked to create a new one on next load.')) { clearLocalPassword(); showMessage('success', 'Local password cleared. Set a new one on next page load.'); } }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.amber, background: T.amberBg, border: `1px solid ${T.amberBorder}`, cursor: 'pointer' }}>
+                    Reset Local Password
+                  </button>
+                  <div style={{ fontSize: 11, color: T.text3, marginTop: 6 }}>This will lock the app until you create a new password.</div>
+                </div>
+              )}
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
