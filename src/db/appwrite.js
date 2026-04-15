@@ -102,7 +102,7 @@ function safeJson(str, fallback = {}) {
 // ─── Shipment serialisation ───────────────────────────────────────────────────
 
 function shipmentToDoc(s) {
-  // Top-level indexed fields
+  // Separate indexed top-level fields from everything else
   const top = {
     ref:         s.ref         || '',
     projectId:   s.projectId   || '',
@@ -113,9 +113,27 @@ function shipmentToDoc(s) {
     etd:         s.etd         || '',
     eta:         s.eta         || '',
   };
-  // Everything else packed into dataJson
-  const { ref, projectId, status, origin, destination, carrier, etd, eta, id, ...rest } = s;
-  top.dataJson = JSON.stringify(rest);
+
+  // Everything else goes into dataJson — strip top-level keys and id
+  const excluded = new Set(['ref','projectId','status','origin','destination','carrier','etd','eta','id','updatedAt']);
+  const rest = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (!excluded.has(k) && v !== undefined) rest[k] = v;
+  }
+
+  const json = JSON.stringify(rest);
+  // Appwrite string limit is 10000 chars — truncate milestones if needed
+  if (json.length > 9800) {
+    // Keep costs, trim milestones to last 20
+    const slim = { ...rest };
+    if (Array.isArray(slim.milestones) && slim.milestones.length > 20) {
+      slim.milestones = slim.milestones.slice(-20);
+    }
+    top.dataJson = JSON.stringify(slim).slice(0, 9800);
+  } else {
+    top.dataJson = json;
+  }
+
   return top;
 }
 
@@ -446,7 +464,6 @@ export async function testConnection() {
 // ─── Migration: local IndexedDB → Appwrite ────────────────────────────────────
 
 export async function migrateFromLocal(localData) {
-  // localData: { shipments, projects, activities, templates, quotes }
   const { db, cfg } = getClient();
   const results = { shipments: 0, projects: 0, activities: 0, templates: 0, quotes: 0, errors: [] };
 
@@ -454,12 +471,16 @@ export async function migrateFromLocal(localData) {
     try {
       await db.createDocument(cfg.databaseId, collection, docId, data);
     } catch (e) {
-      // If already exists, update
       if (e.code === 409) {
-        try { await db.updateDocument(cfg.databaseId, collection, docId, data); }
-        catch (e2) { results.errors.push(`${collection}/${docId}: ${e2.message}`); }
+        // Already exists — update it
+        try {
+          await db.updateDocument(cfg.databaseId, collection, docId, data);
+        } catch (e2) {
+          results.errors.push(`${collection}/${docId}: update failed — ${e2.message}`);
+        }
       } else {
-        results.errors.push(`${collection}/${docId}: ${e.message}`);
+        results.errors.push(`${collection}/${docId}: create failed — ${e.message}`);
+        console.error(`Migration error ${collection}/${docId}:`, e);
       }
     }
   }
@@ -468,18 +489,28 @@ export async function migrateFromLocal(localData) {
     await upsert(COLLECTIONS.projects, p.id, projectToDoc(p));
     results.projects++;
   }
+
   for (const s of (localData.shipments || [])) {
-    await upsert(COLLECTIONS.shipments, s.id, shipmentToDoc(s));
-    results.shipments++;
+    try {
+      const doc = shipmentToDoc(s);
+      await upsert(COLLECTIONS.shipments, s.id, doc);
+      results.shipments++;
+    } catch (e) {
+      results.errors.push(`shipments/${s.id}: serialise failed — ${e.message}`);
+      console.error(`Shipment serialise error ${s.id}:`, e);
+    }
   }
+
   for (const a of (localData.activities || [])) {
     await upsert(COLLECTIONS.activities, a.id, activityToDoc(a));
     results.activities++;
   }
+
   for (const t of (localData.templates || [])) {
     await upsert(COLLECTIONS.templates, t.id, templateToDoc(t));
     results.templates++;
   }
+
   for (const q of (localData.quotes || [])) {
     await upsert(COLLECTIONS.quotes, q.id, quoteToDoc(q));
     results.quotes++;

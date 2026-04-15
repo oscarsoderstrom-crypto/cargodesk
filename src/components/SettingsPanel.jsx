@@ -200,9 +200,15 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange }
         quotes:     db.quotes ? await db.quotes.toArray() : [],
       };
       const results = await migrateFromLocal(localData);
-      showMessage("success",
-        `Migrated: ${results.projects} projects, ${results.shipments} shipments, ${results.activities} activities, ${results.templates} templates, ${results.quotes} quotes.${results.errors.length ? ` (${results.errors.length} errors)` : ''}`
-      );
+      if (results.errors.length > 0) {
+        showMessage("error",
+          `Migrated ${results.shipments} shipments, ${results.projects} projects — but ${results.errors.length} errors: ${results.errors.slice(0,3).join(' | ')}`
+        );
+      } else {
+        showMessage("success",
+          `Migrated: ${results.projects} projects, ${results.shipments} shipments, ${results.activities} activities, ${results.templates} templates, ${results.quotes} quotes.`
+        );
+      }
     } catch (err) {
       showMessage("error", `Migration failed: ${err.message}`);
     } finally {
