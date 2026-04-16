@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, AlertTriangle, Receipt } from "lucide-react";
+import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, AlertTriangle, Receipt, Navigation } from "lucide-react";
 import CostsTab from "./CostsTab.jsx";
 import DocumentsTab from "./DocumentsTab.jsx";
 import NotesTab from "./NotesTab.jsx";
+import TrackingTab from "./TrackingTab.jsx";
 import PortSelect from "./PortSelect.jsx";
 import CarrierSelect from "./CarrierSelect.jsx";
 import ContainerSelect from "./ContainerSelect.jsx";
@@ -66,6 +67,7 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
     { id: "overview",   label: "Overview",   icon: Eye },
     { id: "costs",      label: "Costs",      icon: DollarSign },
     { id: "documents",  label: "Documents",  icon: FileText },
+    { id: "tracking",   label: "Tracking",   icon: Navigation },
     { id: "milestones", label: "Milestones", icon: CheckCircle2 },
     { id: "notes",      label: "Notes",      icon: MessageSquare },
   ];
@@ -428,6 +430,9 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
             </div>
           </div>
         )}
+
+        {/* ===== TRACKING TAB ===== */}
+        {tab === "tracking" && <TrackingTab T={T} shipment={shipment} onUpdate={onUpdate} />}
 
         {/* ===== COSTS TAB ===== */}
         {tab === "costs" && <CostsTab T={T} shipment={shipment} rates={rates} onUpdate={onUpdate} />}

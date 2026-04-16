@@ -1,251 +1,360 @@
-import { useState, useEffect } from "react";
-import { Navigation, ExternalLink, RefreshCw, Clock, MapPin, Ship, AlertTriangle, CheckCircle2, Circle, ChevronDown, ChevronRight, Settings, Anchor, ArrowRight } from "lucide-react";
-import { fetchTracking, getTrackingUrl, isTrackingConfigured, getCarrierTrackingSupport, setLastPollTime } from "../utils/tracking.js";
-import { updateShipment, addActivity } from "../db/schema.js";
+// TrackingTab.jsx — Carrier tracking tab for ShipmentDetail
+// Props: T, shipment, onUpdate
 
-const STATUS_FLOW = [
-  { id: 'planned', label: 'Planned', color: '#8494B0' },
-  { id: 'booked', label: 'Booked', color: '#F59E0B' },
-  { id: 'in_transit', label: 'In Transit', color: '#3B82F6' },
-  { id: 'arrived', label: 'Arrived', color: '#A78BFA' },
-  { id: 'delivered', label: 'Delivered', color: '#10B981' },
-  { id: 'completed', label: 'Completed', color: '#6B7280' },
+import { useState, useEffect, useCallback } from 'react';
+import {
+  ExternalLink, RefreshCw, MapPin, Ship, CheckCircle2,
+  Clock, AlertTriangle, Navigation, Copy, Check, Anchor, Info,
+} from 'lucide-react';
+import {
+  getDirectTrackingUrl, getBestRef,
+  getTrackingLog, addTrackingEvent, setLastChecked, getLastChecked,
+  fetchVesselPosition, isTrackingConfigured,
+} from '../utils/tracking.js';
+import { updateShipment, addActivity } from '../db/schema.js';
+import { timeAgo } from '../utils/activityLog.js';
+
+// ─── Status options for quick update ─────────────────────────────────────────
+
+const STATUS_OPTIONS = [
+  { id: 'planned',    label: 'Planned',    color: null },
+  { id: 'booked',     label: 'Booked',     color: 'amber' },
+  { id: 'in_transit', label: 'In Transit', color: 'accent' },
+  { id: 'arrived',    label: 'Arrived',    color: 'purple' },
+  { id: 'delivered',  label: 'Delivered',  color: 'green' },
 ];
 
-export default function TrackingTab({ T, shipment, onUpdate }) {
-  const [trackingData, setTrackingData] = useState(shipment.lastTracking || null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [showEvents, setShowEvents] = useState(true);
+// ─── Event type config ────────────────────────────────────────────────────────
 
-  const mono = "'JetBrains Mono',monospace";
-  const bookingRef = shipment.carrierBookingNumber || shipment.ref || '';
-  const carrier = shipment.carrier || '';
-  const { hasDirectLink, hasApiTracking } = getCarrierTrackingSupport(carrier);
-  const trackingUrl = getTrackingUrl(carrier, bookingRef);
+function eventIcon(type) {
+  switch (type) {
+    case 'departed':   return <Ship size={13} />;
+    case 'arrived':    return <Anchor size={13} />;
+    case 'in_transit': return <Navigation size={13} />;
+    case 'manual':     return <CheckCircle2 size={13} />;
+    case 'vessel':     return <MapPin size={13} />;
+    default:           return <Clock size={13} />;
+  }
+}
+
+// ─── Copy button ──────────────────────────────────────────────────────────────
+
+function CopyButton({ text, T }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }
+  return (
+    <button onClick={handleCopy} title="Copy to clipboard"
+      style={{ background: 'none', border: 'none', cursor: 'pointer', color: copied ? T.green : T.text3, padding: '2px 4px', display: 'flex', alignItems: 'center' }}>
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export default function TrackingTab({ T, shipment, onUpdate }) {
+  const [log, setLog]               = useState([]);
+  const [vesselPos, setVesselPos]   = useState(null);
+  const [loadingPos, setLoadingPos] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState(null);
+  const [noteInput, setNoteInput]   = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+
+  const ref      = getBestRef(shipment);
+  const trackUrl = ref ? getDirectTrackingUrl(shipment.carrier, ref) : null;
+  const lastCheck = getLastChecked(shipment.id);
   const configured = isTrackingConfigured();
 
-  const fmtDate = (d) => {
-    if (!d) return '—';
-    try { return new Date(d).toLocaleDateString('fi-FI', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
-    catch { return d; }
-  };
+  // Load local event log
+  useEffect(() => {
+    setLog(getTrackingLog(shipment.id));
+  }, [shipment.id]);
 
-  const fmtDateShort = (d) => {
-    if (!d) return '—';
-    try { return new Date(d).toLocaleDateString('fi-FI', { day: 'numeric', month: 'short' }); }
-    catch { return d; }
-  };
+  // ── Status quick-update ───────────────────────────────────────────────────
 
-  // ── Track via worker ──
-  const handleTrackNow = async () => {
-    if (!carrier || !bookingRef) { setError('No carrier or booking number on this shipment.'); return; }
-    setLoading(true); setError(null);
+  async function handleStatusUpdate(newStatus) {
+    if (newStatus === shipment.status) return;
+    setUpdatingStatus(newStatus);
     try {
-      const result = await fetchTracking(carrier, bookingRef);
-      setTrackingData(result);
-      setLastPollTime(shipment.id);
-
-      // Save tracking data but do NOT auto-update status from unreliable scraping
-      const updates = { lastTracking: result, lastTrackingAt: new Date().toISOString() };
-
-      // Only update ETA if we got real events (not from page scraping guesses)
-      if (result.success && result.events && result.events.length > 0 && result.eta) {
-        const newEta = result.eta.slice(0, 10);
-        if (newEta !== shipment.eta) {
-          if (!shipment.originalETA && shipment.eta) updates.originalETA = shipment.eta;
-          updates.eta = newEta;
-        }
-      }
-
-      await updateShipment(shipment.id, updates);
+      await updateShipment(shipment.id, { status: newStatus });
+      await addActivity({
+        id: crypto.randomUUID(), type: 'status',
+        message: `Status updated to ${newStatus.replace('_', ' ')} via tracking tab`,
+        shipmentId: shipment.id, timestamp: new Date().toISOString(),
+      });
+      const entry = addTrackingEvent(shipment.id, {
+        type: 'manual',
+        description: `Status updated: ${newStatus.replace('_', ' ')}`,
+        source: 'Manual update',
+      });
+      setLog(getTrackingLog(shipment.id));
+      setLastChecked(shipment.id);
       if (onUpdate) onUpdate();
-      if (!result.success && result.error) setError(result.error);
-    } catch (err) {
-      setError(err.message);
-    } finally { setLoading(false); }
+    } finally {
+      setUpdatingStatus(null);
+    }
+  }
+
+  // ── "I checked it" — log a check-in without status change ────────────────
+
+  function handleChecked() {
+    const statusLabels = { planned: 'Planned', booked: 'Booked', in_transit: 'In Transit', arrived: 'Arrived', delivered: 'Delivered' };
+    addTrackingEvent(shipment.id, {
+      type: 'manual',
+      description: `Checked on carrier website — status confirmed: ${statusLabels[shipment.status] || shipment.status}`,
+      source: 'Manual check',
+    });
+    setLastChecked(shipment.id);
+    setLog(getTrackingLog(shipment.id));
+  }
+
+  // ── Add manual note to tracking log ──────────────────────────────────────
+
+  async function handleAddNote(e) {
+    e.preventDefault();
+    if (!noteInput.trim()) return;
+    setSavingNote(true);
+    try {
+      addTrackingEvent(shipment.id, {
+        type: 'note',
+        description: noteInput.trim(),
+        source: 'Manual note',
+      });
+      await addActivity({
+        id: crypto.randomUUID(), type: 'note',
+        message: `Tracking note: ${noteInput.trim()}`,
+        shipmentId: shipment.id, timestamp: new Date().toISOString(),
+      });
+      setLog(getTrackingLog(shipment.id));
+      setNoteInput('');
+      if (onUpdate) onUpdate();
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  // ── Vessel position ───────────────────────────────────────────────────────
+
+  async function handleFetchPosition() {
+    if (!shipment.vessel || shipment.vessel === 'TBD' || shipment.vessel === '—') return;
+    setLoadingPos(true);
+    try {
+      const pos = await fetchVesselPosition(shipment.vessel, shipment.imoNumber);
+      setVesselPos(pos);
+      if (pos) {
+        addTrackingEvent(shipment.id, {
+          type: 'vessel',
+          description: `Vessel position updated — ${pos.destination ? `heading to ${pos.destination}` : 'position recorded'}`,
+          source: pos.source,
+          lat: pos.lat,
+          lng: pos.lng,
+        });
+        setLog(getTrackingLog(shipment.id));
+      }
+    } finally {
+      setLoadingPos(false);
+    }
+  }
+
+  const hasVessel = shipment.vessel && shipment.vessel !== 'TBD' && shipment.vessel !== '—';
+
+  const inputStyle = {
+    flex: 1, padding: '8px 12px', borderRadius: 7, fontSize: 13,
+    border: `1px solid ${T.border1}`, background: T.bg3, color: T.text0, outline: 'none',
   };
 
-  // ── Manual quick-status update ──
-  const handleStatusUpdate = async (newStatus) => {
-    const prev = shipment.status;
-    await updateShipment(shipment.id, { status: newStatus, updatedAt: new Date().toISOString() });
-    await addActivity({ id: crypto.randomUUID(), type: 'status', message: `Status updated: ${prev.replace('_', ' ')} → ${newStatus.replace('_', ' ')}`, shipmentId: shipment.id, timestamp: new Date().toISOString() });
-    if (onUpdate) onUpdate();
-  };
-
-  const currentStatusIdx = STATUS_FLOW.findIndex(s => s.id === shipment.status);
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div>
-      {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div>
-          <div style={{ fontSize: 14, color: T.text2 }}>
-            Tracking: <strong style={{ color: T.text0, fontFamily: mono }}>{bookingRef || 'No booking number'}</strong>
-            {carrier && <span style={{ marginLeft: 8, color: T.text3 }}>via {carrier}</span>}
-          </div>
-          {trackingData?.lastUpdated && (
-            <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>Last checked: {fmtDate(trackingData.lastUpdated)}</div>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {trackingUrl && (
-            <a href={trackingUrl} target="_blank" rel="noopener noreferrer"
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: 'pointer', textDecoration: 'none' }}>
-              <ExternalLink size={14} /> Track on {carrier}
-            </a>
-          )}
-          {configured && hasApiTracking && bookingRef && (
-            <button onClick={handleTrackNow} disabled={loading}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, color: loading ? T.text3 : T.green, background: T.greenBg, border: `1px solid ${T.greenBorder}`, cursor: loading ? 'default' : 'pointer' }}>
-              <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
-              {loading ? 'Tracking...' : 'Track Now'}
-            </button>
+    <div style={{ maxWidth: 600 }}>
+
+      {/* ── Reference row ── */}
+      <div style={{ padding: '12px 16px', borderRadius: 10, background: T.bg2, border: `1px solid ${T.border1}`, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: T.text3, marginBottom: 10 }}>Tracking Reference</div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {[
+            { label: 'BL / SWB',      value: shipment.blNumber },
+            { label: 'Booking Ref',   value: shipment.ref },
+            { label: 'Customer Ref',  value: shipment.customerRef },
+            { label: 'Quotation No.', value: shipment.quotationNumber },
+          ].filter(r => r.value).map(r => (
+            <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 11, color: T.text3 }}>{r.label}:</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: T.text0, fontFamily: "'JetBrains Mono', monospace" }}>{r.value}</span>
+              <CopyButton text={r.value} T={T} />
+            </div>
+          ))}
+          {!ref && (
+            <div style={{ fontSize: 13, color: T.text3, fontStyle: 'italic' }}>No tracking reference yet — add BL number or booking reference in Overview.</div>
           )}
         </div>
       </div>
-      <style>{`@keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}`}</style>
 
-      {/* ── Error ── */}
-      {error && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, borderRadius: 10, marginBottom: 16, border: `1px solid ${T.amberBorder}`, background: T.amberBg }}>
-          <AlertTriangle size={18} color={T.amber} />
-          <div style={{ flex: 1, fontSize: 13, color: T.text1 }}>{error}</div>
+      {/* ── Open on carrier website ── */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {trackUrl ? (
+          <a href={trackUrl} target="_blank" rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'white', background: T.accent, border: 'none', cursor: 'pointer', textDecoration: 'none' }}>
+            <ExternalLink size={14} /> Track on {shipment.carrier || 'carrier website'}
+          </a>
+        ) : (
+          <div style={{ fontSize: 13, color: T.text3, padding: '9px 0' }}>
+            {!ref ? 'Add a booking reference to enable tracking.' : `No direct tracking link for ${shipment.carrier || 'this carrier'}.`}
+          </div>
+        )}
+
+        {trackUrl && (
+          <button onClick={handleChecked}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 8, fontSize: 13, fontWeight: 500, color: T.green, background: T.greenBg, border: `1px solid ${T.greenBorder}`, cursor: 'pointer' }}>
+            <CheckCircle2 size={14} /> I checked it
+          </button>
+        )}
+      </div>
+
+      {lastCheck && (
+        <div style={{ fontSize: 12, color: T.text3, marginBottom: 16 }}>
+          Last checked: {timeAgo(lastCheck)}
         </div>
       )}
 
-      {/* ── Current status + quick update ── */}
+      {/* ── Status quick-update ── */}
       <div style={{ marginBottom: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text2, marginBottom: 12 }}>Shipment Status</h3>
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {STATUS_FLOW.map((s, i) => {
-            const isCurrent = s.id === shipment.status;
-            const isPast = i < currentStatusIdx;
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: T.text3, marginBottom: 10 }}>Update Status</div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {STATUS_OPTIONS.map(opt => {
+            const isActive = shipment.status === opt.id;
+            const isLoading = updatingStatus === opt.id;
+            const color = opt.color ? T[opt.color] : T.text2;
+            const bg = opt.color ? T[`${opt.color}Bg`] : T.bg3;
+            const border = opt.color ? T[`${opt.color}Border`] : T.border1;
             return (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <button onClick={() => handleStatusUpdate(s.id)}
-                  style={{
-                    padding: '8px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    background: isCurrent ? s.color : isPast ? `${s.color}22` : T.bg3,
-                    color: isCurrent ? '#fff' : isPast ? s.color : T.text3,
-                    border: `1px solid ${isCurrent ? s.color : isPast ? `${s.color}44` : T.border1}`,
-                  }}>
-                  {s.label}
-                </button>
-                {i < STATUS_FLOW.length - 1 && <ArrowRight size={12} color={T.text3} />}
-              </div>
+              <button key={opt.id}
+                onClick={() => handleStatusUpdate(opt.id)}
+                disabled={isLoading}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '7px 14px', borderRadius: 7, fontSize: 12, fontWeight: isActive ? 700 : 500,
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  background: isActive ? (opt.color ? T[opt.color] : T.bg4) : bg,
+                  color: isActive ? 'white' : color,
+                  border: `1px solid ${isActive ? (opt.color ? T[opt.color] : T.border2) : border}`,
+                  opacity: isLoading ? 0.6 : 1,
+                  transition: 'all 0.15s',
+                }}>
+                {isLoading
+                  ? <RefreshCw size={11} style={{ animation: 'spin 0.8s linear infinite' }} />
+                  : isActive && <CheckCircle2 size={11} />}
+                {opt.label}
+              </button>
             );
           })}
         </div>
-        <div style={{ fontSize: 12, color: T.text3, marginTop: 8 }}>
-          Click a status to update after checking the carrier's tracking page.
-        </div>
       </div>
 
-      {/* ── Shipment route overview ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 20 }}>
-        <div style={{ padding: 16, borderRadius: 12, background: T.bg2, border: `1px solid ${T.border1}` }}>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text3, marginBottom: 4 }}>Origin</div>
-          <div style={{ fontSize: 14, fontWeight: 500, color: T.text0 }}>{shipment.origin || '—'}</div>
-          {shipment.etd && <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>ETD: {fmtDateShort(shipment.etd)}</div>}
-        </div>
-        {shipment.vessel && shipment.vessel !== '—' && shipment.vessel !== 'TBD' && (
-          <div style={{ padding: 16, borderRadius: 12, background: T.bg2, border: `1px solid ${T.border1}` }}>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text3, marginBottom: 4 }}>Vessel</div>
-            <div style={{ fontSize: 14, fontWeight: 500, color: T.text0, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Ship size={14} color={T.accent} /> {shipment.vessel}
+      {/* ── Vessel position ── */}
+      {hasVessel && (
+        <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 10, background: T.bg2, border: `1px solid ${T.border1}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: vesselPos ? 12 : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <Ship size={15} color={T.accent} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: T.text0 }}>{shipment.vessel}</span>
+              {shipment.voyage && shipment.voyage !== 'TBD' && <span style={{ fontSize: 12, color: T.text3 }}>Voy. {shipment.voyage}</span>}
             </div>
-            {shipment.voyage && <div style={{ fontSize: 12, color: T.text3 }}>Voy. {shipment.voyage}</div>}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={handleFetchPosition} disabled={loadingPos || !configured}
+                title={configured ? 'Fetch vessel position' : 'Set tracking worker URL in Settings first'}
+                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: configured ? 'pointer' : 'not-allowed', color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, opacity: configured ? 1 : 0.5 }}>
+                <RefreshCw size={12} style={{ animation: loadingPos ? 'spin 0.8s linear infinite' : 'none' }} />
+                {loadingPos ? 'Loading…' : 'Get Position'}
+              </button>
+              {/* MarineTraffic link */}
+              <a href={`https://www.marinetraffic.com/en/ais/home/centerx:0/centery:0/zoom:4`}
+                target="_blank" rel="noopener noreferrer"
+                style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, textDecoration: 'none' }}>
+                <ExternalLink size={11} /> MarineTraffic
+              </a>
+            </div>
           </div>
-        )}
-        <div style={{ padding: 16, borderRadius: 12, background: T.bg2, border: `1px solid ${T.border1}` }}>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text3, marginBottom: 4 }}>Destination</div>
-          <div style={{ fontSize: 14, fontWeight: 500, color: T.text0 }}>{shipment.destination || '—'}</div>
-          {shipment.eta && <div style={{ fontSize: 12, color: T.text3, marginTop: 4 }}>ETA: {fmtDateShort(shipment.eta)}</div>}
-        </div>
-      </div>
 
-      {/* ── Tracking events from API ── */}
-      {trackingData?.events?.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div onClick={() => setShowEvents(!showEvents)}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, cursor: 'pointer' }}>
-            {showEvents ? <ChevronDown size={16} color={T.text2} /> : <ChevronRight size={16} color={T.text2} />}
-            <h3 style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text2, margin: 0 }}>
-              Carrier Events ({trackingData.events.length})
-            </h3>
-          </div>
-          {showEvents && (
-            <div style={{ borderRadius: 10, border: `1px solid ${T.border1}`, overflow: 'hidden' }}>
-              {trackingData.events.map((evt, i) => {
-                const isLatest = i === trackingData.events.length - 1;
-                return (
-                  <div key={i} style={{ display: 'flex', gap: 12, padding: '12px 16px', borderBottom: i < trackingData.events.length - 1 ? `1px solid ${T.border0}` : 'none', background: isLatest ? T.accentGlow : T.bg2 }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 24 }}>
-                      {isLatest ? <CheckCircle2 size={18} color={T.accent} /> : <Circle size={14} color={T.text3} style={{ marginTop: 2 }} />}
-                      {i < trackingData.events.length - 1 && <div style={{ width: 2, flex: 1, background: T.border1, minHeight: 16, marginTop: 4 }} />}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: isLatest ? 600 : 400, color: isLatest ? T.text0 : T.text1 }}>{evt.description}</div>
-                      <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 12, color: T.text3 }}>
-                        {evt.location && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><MapPin size={11} /> {evt.location}</span>}
-                        {evt.date && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={11} /> {fmtDate(evt.date)}</span>}
-                        {evt.vessel && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Ship size={11} /> {evt.vessel}</span>}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+          {vesselPos && (
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 8, paddingTop: 10, borderTop: `1px solid ${T.border0}` }}>
+              {[
+                { label: 'Lat/Lng', value: `${vesselPos.lat?.toFixed(4)}, ${vesselPos.lng?.toFixed(4)}` },
+                { label: 'Speed', value: vesselPos.speed ? `${vesselPos.speed} knots` : null },
+                { label: 'Destination', value: vesselPos.destination },
+                { label: 'Vessel ETA', value: vesselPos.eta },
+                { label: 'Source', value: vesselPos.source },
+              ].filter(f => f.value).map(f => (
+                <div key={f.label}>
+                  <div style={{ fontSize: 10, color: T.text3, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{f.label}</div>
+                  <div style={{ fontSize: 12, color: T.text1, fontWeight: 500 }}>{f.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!configured && (
+            <div style={{ marginTop: 8, fontSize: 11, color: T.text3, display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Info size={11} /> Set tracking worker URL in Settings → Tracking to enable position lookup.
             </div>
           )}
         </div>
       )}
 
-      {/* ── Routing from booking data ── */}
-      {shipment.routing && (
-        <div style={{ marginBottom: 20 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.text2, marginBottom: 12 }}>Route</h3>
-          <div style={{ padding: 16, borderRadius: 10, background: T.bg2, border: `1px solid ${T.border1}`, fontSize: 14, color: T.text1 }}>
-            {shipment.routing}
-          </div>
-        </div>
-      )}
+      {/* ── Add note ── */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: T.text3, marginBottom: 10 }}>Add Tracking Note</div>
+        <form onSubmit={handleAddNote} style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={noteInput}
+            onChange={e => setNoteInput(e.target.value)}
+            placeholder="e.g. Vessel delayed at Bremerhaven, new ETA June 5"
+            style={inputStyle}
+          />
+          <button type="submit" disabled={savingNote || !noteInput.trim()}
+            style={{ padding: '8px 14px', borderRadius: 7, fontSize: 13, fontWeight: 600, color: 'white', background: noteInput.trim() ? T.accent : T.bg4, border: 'none', cursor: noteInput.trim() ? 'pointer' : 'not-allowed', whiteSpace: 'nowrap' }}>
+            Add Note
+          </button>
+        </form>
+      </div>
 
-      {/* ── Direct link helper for non-API carriers ── */}
-      {!hasApiTracking && hasDirectLink && bookingRef && (
-        <div style={{ padding: 20, borderRadius: 12, border: `1px solid ${T.border1}`, background: T.bg2, textAlign: 'center' }}>
-          <Navigation size={28} color={T.text3} style={{ margin: '0 auto 12px', opacity: 0.5 }} />
-          <div style={{ fontSize: 14, fontWeight: 500, color: T.text1, marginBottom: 8 }}>
-            Automated tracking is not yet available for {carrier}
-          </div>
-          <div style={{ fontSize: 13, color: T.text3, marginBottom: 16 }}>
-            Click the button below to check on the carrier's website, then update the status above.
-          </div>
-          <a href={trackingUrl} target="_blank" rel="noopener noreferrer"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 8, fontSize: 14, fontWeight: 500, color: '#fff', background: T.accent, textDecoration: 'none', cursor: 'pointer' }}>
-            <ExternalLink size={16} /> Open {carrier} Tracking
-          </a>
+      {/* ── Tracking event log ── */}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: T.text3, marginBottom: 10 }}>
+          Tracking Log {log.length > 0 && `(${log.length})`}
         </div>
-      )}
 
-      {/* ── No booking number ── */}
-      {!bookingRef && (
-        <div style={{ padding: 32, borderRadius: 12, border: `1px dashed ${T.border2}`, textAlign: 'center', color: T.text3, fontSize: 13, background: T.bg2 }}>
-          <Navigation size={28} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
-          <div>No carrier booking number on this shipment yet.</div>
-          <div style={{ marginTop: 4 }}>Drop a booking confirmation PDF on the Documents tab to auto-extract it.</div>
-        </div>
-      )}
-
-      {/* ── Not configured ── */}
-      {!configured && hasApiTracking && bookingRef && (
-        <div style={{ padding: 16, borderRadius: 10, border: `1px solid ${T.amberBorder}`, background: T.amberBg, marginTop: 16 }}>
-          <div style={{ fontSize: 13, color: T.text1 }}>
-            <strong>Tip:</strong> Set your Cloudflare Worker URL in Settings to enable automatic tracking via API.
+        {log.length === 0 ? (
+          <div style={{ padding: '20px 16px', borderRadius: 10, background: T.bg2, border: `1px dashed ${T.border1}`, textAlign: 'center', fontSize: 13, color: T.text3 }}>
+            No tracking events yet. Open the carrier website and confirm the status using the buttons above.
           </div>
-        </div>
-      )}
+        ) : (
+          <div style={{ borderRadius: 10, border: `1px solid ${T.border1}`, overflow: 'hidden' }}>
+            {log.map((entry, i) => (
+              <div key={entry.id || i}
+                style={{ display: 'flex', gap: 12, padding: '10px 16px', borderBottom: i < log.length - 1 ? `1px solid ${T.border0}` : 'none', background: T.bg2 }}>
+                <div style={{ color: T.accent, flexShrink: 0, marginTop: 2 }}>
+                  {eventIcon(entry.type)}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, color: T.text0, lineHeight: 1.4 }}>{entry.description}</div>
+                  {entry.source && <div style={{ fontSize: 11, color: T.text3, marginTop: 2 }}>{entry.source}</div>}
+                </div>
+                <div style={{ fontSize: 11, color: T.text3, flexShrink: 0, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {timeAgo(entry.timestamp)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

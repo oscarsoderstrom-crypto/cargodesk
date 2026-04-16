@@ -1,97 +1,118 @@
-// tracking.js — Client-side carrier tracking logic
+// tracking.js — Client-side carrier tracking utility
+// Direct tracking links, worker calls for vessel AIS, local event log
 
 const WORKER_URL_KEY = 'cargodesk_tracking_worker_url';
-const POLL_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+const CACHE_KEY_PREFIX = 'cargodesk_track_';
 
-// ─── Worker URL management ──────────────────────────────────────────────────
+// ─── Worker URL ───────────────────────────────────────────────────────────────
 
 export function getWorkerUrl() {
   try { return localStorage.getItem(WORKER_URL_KEY) || ''; } catch { return ''; }
 }
-
 export function setWorkerUrl(url) {
-  try { localStorage.setItem(WORKER_URL_KEY, url.replace(/\/$/, '')); } catch {}
+  try { localStorage.setItem(WORKER_URL_KEY, (url || '').trim().replace(/\/$/, '')); } catch {}
 }
-
 export function isTrackingConfigured() {
   return getWorkerUrl().length > 0;
 }
 
-// ─── Direct tracking URLs ───────────────────────────────────────────────────
+// ─── Direct carrier tracking URLs ────────────────────────────────────────────
 
-const TRACKING_URLS = {
-  'Hapag-Lloyd': (ref) => `https://www.hapag-lloyd.com/en/online-business/track/track-by-booking-solution.html?blno=${ref}`,
-  'MSC': (ref) => `https://www.msc.com/en/track-a-shipment?agencyPath=msc&searchText=${ref}`,
+const CARRIER_URLS = {
+  'Hapag-Lloyd':    (ref) => `https://www.hapag-lloyd.com/en/online-business/tracing/tracing-by-booking.html?blno=${ref}`,
+  'MSC':            (ref) => `https://www.msc.com/en/track-a-shipment?agencyPath=msc&searchText=${ref}`,
+  'COSCO':          (ref) => `https://elines.coscoshipping.com/ebusiness/cargoTracking?trackingType=BOOKING&number=${ref}`,
   'COSCO Shipping': (ref) => `https://elines.coscoshipping.com/ebusiness/cargoTracking?trackingType=BOOKING&number=${ref}`,
-  'COSCO': (ref) => `https://elines.coscoshipping.com/ebusiness/cargoTracking?trackingType=BOOKING&number=${ref}`,
-  'CMA CGM': (ref) => `https://www.cma-cgm.com/ebusiness/tracking/search?SearchBy=BookingNumber&Reference=${ref}`,
-  'ONE': (ref) => `https://ecomm.one-line.com/one-ecom/manage-shipment/cargo-tracking?search-type=BK&search-name=${ref}`,
-  'OOCL': (ref) => `https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx?ref=${ref}`,
-  'Maersk': (ref) => `https://www.maersk.com/tracking/${ref}`,
-  'Evergreen': (ref) => `https://www.shipmentlink.com/servlet/TDB1_CargoTracking.do?BkgNo=${ref}`,
-  'ZIM': (ref) => `https://www.zim.com/tools/track-a-shipment?consnumber=${ref}`,
+  'CMA CGM':        (ref) => `https://www.cma-cgm.com/ebusiness/tracking/search?SearchBy=BookingNumber&Reference=${ref}`,
+  'CMA-CGM':        (ref) => `https://www.cma-cgm.com/ebusiness/tracking/search?SearchBy=BookingNumber&Reference=${ref}`,
+  'ONE':            (ref) => `https://ecomm.one-line.com/one-ecom/manage-shipment/cargo-tracking?search-type=BK&search-name=${ref}`,
+  'OOCL':           (ref) => `https://www.oocl.com/eng/ourservices/eservices/cargotracking/Pages/cargotracking.aspx?ref=${ref}`,
+  'Maersk':         (ref) => `https://www.maersk.com/tracking/${ref}`,
+  'Evergreen':      (ref) => `https://www.shipmentlink.com/servlet/TDB1_CargoTracking.do?BkgNo=${ref}`,
+  'ZIM':            (ref) => `https://www.zim.com/tools/track-a-shipment?consnumber=${ref}`,
+  'Yang Ming':      (ref) => `https://www.yangming.com/e-service/Track_Trace/track_trace_cargo_tracking.aspx?number=${ref}`,
+  'HMM':            (ref) => `https://www.hmm21.com/cms/business/ebiz/trackTrace/trackTraceView/index.jsp?blNo=${ref}`,
+  'DSV':            (ref) => `https://www.dsv.com/en/track-and-trace?trackingNumber=${ref}`,
+  'DB Schenker':    (ref) => `https://www.dbschenker.com/global/tracking/?id=${ref}`,
+  'Kuehne+Nagel':   (ref) => `https://kn-portal.com/tracking/?q=${ref}`,
 };
 
-export function getTrackingUrl(carrier, bookingNumber) {
-  if (!carrier || !bookingNumber) return null;
-  const fn = TRACKING_URLS[carrier] || Object.entries(TRACKING_URLS).find(([k]) =>
-    carrier.toLowerCase().includes(k.toLowerCase().split(' ')[0])
-  )?.[1];
-  return fn ? fn(bookingNumber) : null;
+export function getDirectTrackingUrl(carrier, ref) {
+  if (!carrier || !ref) return null;
+
+  // Exact match first
+  if (CARRIER_URLS[carrier]) return CARRIER_URLS[carrier](ref);
+
+  // Fuzzy match — normalize both sides
+  const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cn = normalize(carrier);
+  const match = Object.entries(CARRIER_URLS).find(([k]) => {
+    const kn = normalize(k);
+    return cn.includes(kn) || kn.includes(cn);
+  });
+  return match ? match[1](ref) : null;
 }
 
-export function getCarrierTrackingSupport(carrier) {
-  if (!carrier) return { hasDirectLink: false, hasApiTracking: false };
-  const normalized = carrier.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const hasDirectLink = !!getTrackingUrl(carrier, 'test');
-  const apiCarriers = ['hapagloyd', 'hapaglloyd', 'msc', 'maersk'];
-  const hasApiTracking = apiCarriers.some(c => normalized.includes(c));
-  return { hasDirectLink, hasApiTracking };
+// ─── Best tracking reference ──────────────────────────────────────────────────
+
+export function getBestRef(shipment) {
+  return shipment.blNumber || shipment.quotationNumber || shipment.ref || null;
 }
 
-// ─── API tracking via Cloudflare Worker ─────────────────────────────────────
+// ─── Local event log ──────────────────────────────────────────────────────────
 
-export async function fetchTracking(carrier, bookingNumber) {
-  const workerUrl = getWorkerUrl();
-  if (!workerUrl) {
-    return { success: false, error: 'Tracking worker URL not configured. Set it in Settings.', trackingUrl: getTrackingUrl(carrier, bookingNumber) };
-  }
+function cacheKey(shipmentId) { return `${CACHE_KEY_PREFIX}${shipmentId}`; }
+
+export function getTrackingLog(shipmentId) {
   try {
-    const resp = await fetch(`${workerUrl}/track`, {
+    return JSON.parse(localStorage.getItem(cacheKey(shipmentId)) || '[]');
+  } catch { return []; }
+}
+
+export function addTrackingEvent(shipmentId, event) {
+  try {
+    const log = getTrackingLog(shipmentId);
+    const entry = {
+      id: `te_${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      ...event,
+    };
+    // Keep last 50 events
+    const updated = [entry, ...log].slice(0, 50);
+    localStorage.setItem(cacheKey(shipmentId), JSON.stringify(updated));
+    return entry;
+  } catch { return null; }
+}
+
+export function clearTrackingLog(shipmentId) {
+  try { localStorage.removeItem(cacheKey(shipmentId)); } catch {}
+}
+
+// ─── Vessel position lookup via worker ───────────────────────────────────────
+
+export async function fetchVesselPosition(vesselName, imoNumber) {
+  const url = getWorkerUrl();
+  if (!url || (!vesselName && !imoNumber)) return null;
+  try {
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ carrier, bookingNumber }),
+      body: JSON.stringify({ action: 'vessel', vesselName, imoNumber }),
     });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
-      return { success: false, error: err.error || `Worker returned ${resp.status}`, trackingUrl: getTrackingUrl(carrier, bookingNumber) };
-    }
-    const data = await resp.json();
-    data.trackingUrl = data.trackingUrl || getTrackingUrl(carrier, bookingNumber);
-    return data;
-  } catch (err) {
-    return { success: false, error: `Network error: ${err.message}`, trackingUrl: getTrackingUrl(carrier, bookingNumber) };
-  }
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.success ? data.position : null;
+  } catch { return null; }
 }
 
-// ─── Polling management ─────────────────────────────────────────────────────
+// ─── Last checked tracking ────────────────────────────────────────────────────
 
-const LAST_POLL_KEY = 'cargodesk_last_poll';
+const LAST_CHECK_KEY = 'cargodesk_last_track_';
 
-export function getLastPollTime(shipmentId) {
-  try { return JSON.parse(localStorage.getItem(LAST_POLL_KEY) || '{}')[shipmentId] || null; } catch { return null; }
+export function getLastChecked(shipmentId) {
+  try { return localStorage.getItem(`${LAST_CHECK_KEY}${shipmentId}`) || null; } catch { return null; }
 }
 
-export function setLastPollTime(shipmentId) {
-  try {
-    const data = JSON.parse(localStorage.getItem(LAST_POLL_KEY) || '{}');
-    data[shipmentId] = new Date().toISOString();
-    localStorage.setItem(LAST_POLL_KEY, JSON.stringify(data));
-  } catch {}
-}
-
-export function shouldPoll(shipmentId) {
-  const last = getLastPollTime(shipmentId);
-  if (!last) return true;
-  return (Date.now() - new Date(last).getTime()) > POLL_INTERVAL;
+export function setLastChecked(shipmentId) {
+  try { localStorage.setItem(`${LAST_CHECK_KEY}${shipmentId}`, new Date().toISOString()); } catch {}
 }
