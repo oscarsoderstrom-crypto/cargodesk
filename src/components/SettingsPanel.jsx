@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation, Bot, Database, Cloud, HardDrive } from "lucide-react";
+import { Download, Upload, Trash2, AlertTriangle, CheckCircle2, Shield, X, RefreshCw, Navigation, Bot, Database, Cloud, HardDrive, Users, UserPlus, UserX, Eye, EyeOff } from "lucide-react";
 import { exportData, importData, resetDB, getMode, setMode, getDbSource, setDbSource } from "../db/schema.js";
 import { getWorkerUrl, setWorkerUrl } from "../utils/tracking.js";
 import { getAiWorkerUrl, setAiWorkerUrl } from "../utils/assistantContext.js";
@@ -33,6 +33,79 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange, 
   const [dbTestResult, setDbTestResult] = useState(null);
   const [dbTesting,    setDbTesting]    = useState(false);
   const [migrating,    setMigrating]    = useState(false);
+
+  // User management
+  const ADMIN_KEY = 'cargodesk_admin_worker_url';
+  const [adminWorkerUrl, setAdminWorkerUrlState] = useState(() => { try { return localStorage.getItem(ADMIN_KEY) || ''; } catch { return ''; } });
+  const [userList,       setUserList]   = useState([]);
+  const [loadingUsers,   setLoadingUsers] = useState(false);
+  const [newEmail,       setNewEmail]   = useState('');
+  const [newName,        setNewName]    = useState('');
+  const [newPassword,    setNewPassword] = useState('');
+  const [showNewPass,    setShowNewPass] = useState(false);
+  const [creatingUser,   setCreatingUser] = useState(false);
+  const [deletingUser,   setDeletingUser] = useState(null);
+
+  function saveAdminUrl(url) {
+    setAdminWorkerUrlState(url);
+    try { localStorage.setItem(ADMIN_KEY, url.trim()); } catch {}
+  }
+
+  async function adminRequest(action, extra = {}) {
+    const url = adminWorkerUrl.trim();
+    if (!url) throw new Error('Admin worker URL not set.');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...extra }),
+    });
+    const data = await res.json();
+    if (!data.success && data.error) throw new Error(data.error);
+    return data;
+  }
+
+  async function loadUsers() {
+    if (!adminWorkerUrl.trim()) return;
+    setLoadingUsers(true);
+    try {
+      const data = await adminRequest('list');
+      setUserList(data.users || []);
+    } catch (err) {
+      showMessage('error', `Could not load users: ${err.message}`);
+    } finally {
+      setLoadingUsers(false);
+    }
+  }
+
+  async function handleCreateUser(e) {
+    e.preventDefault();
+    if (!newEmail.trim() || !newPassword) return;
+    setCreatingUser(true);
+    try {
+      await adminRequest('create', { email: newEmail.trim(), password: newPassword, name: newName.trim() });
+      showMessage('success', `User ${newEmail.trim()} created successfully.`);
+      setNewEmail(''); setNewName(''); setNewPassword('');
+      await loadUsers();
+    } catch (err) {
+      showMessage('error', err.message);
+    } finally {
+      setCreatingUser(false);
+    }
+  }
+
+  async function handleDeleteUser(userId, email) {
+    if (!window.confirm(`Delete user ${email}? This cannot be undone.`)) return;
+    setDeletingUser(userId);
+    try {
+      await adminRequest('delete', { userId });
+      showMessage('success', `User ${email} deleted.`);
+      setUserList(u => u.filter(x => x.id !== userId));
+    } catch (err) {
+      showMessage('error', err.message);
+    } finally {
+      setDeletingUser(null);
+    }
+  }
 
   const currentMode = getMode();
 
@@ -226,6 +299,7 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange, 
   const sections = [
     { id: "mode",     label: "Mode"         },
     { id: "database", label: "Database"     },
+    ...(getDbSource() === 'cloud' ? [{ id: "users", label: "Users" }] : []),
     { id: "ai",       label: "AI Assistant" },
     { id: "tracking", label: "Tracking"     },
     { id: "backup",   label: "Backup"       },
@@ -369,6 +443,109 @@ export default function SettingsPanel({ T, onClose, onModeChange, onDataChange, 
                   <div style={{ fontSize: 11, color: T.text3, marginTop: 6 }}>This will lock the app until you create a new password.</div>
                 </div>
               )}
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+
+          {/* ── USERS ── */}
+          {activeSection === "users" && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Users size={18} color={T.accent} />
+                  <div style={{ fontSize: 14, color: T.text1 }}>Manage who can access CargoDesk.</div>
+                </div>
+                <button onClick={loadUsers} disabled={loadingUsers || !adminWorkerUrl.trim()}
+                  title={!adminWorkerUrl.trim() ? "Set admin worker URL below first" : "Refresh user list"}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 7, fontSize: 12, fontWeight: 500, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: adminWorkerUrl.trim() ? "pointer" : "not-allowed", opacity: adminWorkerUrl.trim() ? 1 : 0.5 }}>
+                  <RefreshCw size={13} style={{ animation: loadingUsers ? "spin 0.8s linear infinite" : "none" }} />
+                  {loadingUsers ? "Loading…" : "Load Users"}
+                </button>
+              </div>
+
+              {/* Admin worker URL */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: T.text2, marginBottom: 6 }}>Admin Worker URL</label>
+                <input type="url" value={adminWorkerUrl} onChange={e => saveAdminUrl(e.target.value)}
+                  placeholder="https://cargodesk-admin.your-subdomain.workers.dev"
+                  style={inputStyle} />
+                <div style={{ fontSize: 11, color: T.text3, marginTop: 4 }}>
+                  Deploy the <code>cargodesk-admin</code> worker with your Appwrite API key secret, then paste the URL here.
+                </div>
+              </div>
+
+              {/* User list */}
+              {userList.length > 0 && (
+                <div style={{ marginBottom: 20, borderRadius: 10, border: `1px solid ${T.border1}`, overflow: "hidden" }}>
+                  {userList.map((u, i) => (
+                    <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < userList.length - 1 ? `1px solid ${T.border0}` : "none", background: T.bg2 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: T.bg4, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: T.text2 }}>{(u.name || u.email)[0].toUpperCase()}</span>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: T.text0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name || u.email}</div>
+                        <div style={{ fontSize: 11, color: T.text3 }}>{u.email}</div>
+                      </div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: u.status ? T.green : T.amber, padding: "2px 6px", borderRadius: 4, background: u.status ? T.greenBg : T.amberBg }}>
+                        {u.status ? "ACTIVE" : "DISABLED"}
+                      </div>
+                      <button onClick={() => handleDeleteUser(u.id, u.email)} disabled={deletingUser === u.id}
+                        title="Delete user"
+                        style={{ background: "none", border: "none", color: T.text3, cursor: "pointer", padding: 4, flexShrink: 0, display: "flex", alignItems: "center" }}
+                        onMouseEnter={e => e.currentTarget.style.color = T.red}
+                        onMouseLeave={e => e.currentTarget.style.color = T.text3}>
+                        {deletingUser === u.id
+                          ? <RefreshCw size={14} style={{ animation: "spin 0.8s linear infinite" }} />
+                          : <UserX size={14} />}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {userList.length === 0 && adminWorkerUrl.trim() && (
+                <div style={{ fontSize: 13, color: T.text3, marginBottom: 20, padding: "12px 16px", borderRadius: 8, background: T.bg3, border: `1px solid ${T.border1}` }}>
+                  Click "Load Users" to see existing accounts.
+                </div>
+              )}
+
+              {/* Create user form */}
+              <div style={{ paddingTop: 16, borderTop: `1px solid ${T.border1}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                  <UserPlus size={15} color={T.green} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: T.text0 }}>Add New User</span>
+                </div>
+                <form onSubmit={handleCreateUser}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: T.text2, marginBottom: 5 }}>Email *</label>
+                      <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} required
+                        placeholder="colleague@example.com" style={inputStyle} />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: T.text2, marginBottom: 5 }}>Name</label>
+                      <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
+                        placeholder="Full name" style={inputStyle} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: T.text2, marginBottom: 5 }}>Temporary Password *</label>
+                    <div style={{ position: "relative" }}>
+                      <input type={showNewPass ? "text" : "password"} value={newPassword} onChange={e => setNewPassword(e.target.value)} required
+                        placeholder="Min. 8 characters" style={{ ...inputStyle, paddingRight: 42 }} />
+                      <button type="button" onClick={() => setShowNewPass(v => !v)}
+                        style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: T.text3, cursor: "pointer", padding: 2, display: "flex", alignItems: "center" }}>
+                        {showNewPass ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11, color: T.text3, marginTop: 4 }}>Share this password with the new user — they can change it after signing in.</div>
+                  </div>
+                  <button type="submit" disabled={creatingUser || !newEmail.trim() || !newPassword || newPassword.length < 8 || !adminWorkerUrl.trim()}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8, fontSize: 13, fontWeight: 600, color: "white", background: (newEmail.trim() && newPassword.length >= 8 && adminWorkerUrl.trim()) ? T.green : T.bg4, border: "none", cursor: (newEmail.trim() && newPassword.length >= 8 && adminWorkerUrl.trim()) ? "pointer" : "not-allowed" }}>
+                    <UserPlus size={14} /> {creatingUser ? "Creating…" : "Create User"}
+                  </button>
+                </form>
+              </div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           )}
