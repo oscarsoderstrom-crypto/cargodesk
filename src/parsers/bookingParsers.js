@@ -4,6 +4,7 @@
 // ─── Date helpers ───────────────────────────────────────────────────────────
 
 function parseHLDate(str) {
+  // Hapag-Lloyd: "02-May-2026 09:00" or "02-Apr-2026"
   if (!str) return null;
   const m = str.trim().match(/(\d{2})-(\w{3})-(\d{4})\s*(\d{2}:\d{2})?/);
   if (!m) return null;
@@ -15,6 +16,7 @@ function parseHLDate(str) {
 }
 
 function parseMSCDate(str) {
+  // MSC: "21/04/2026 12:00" or "30/03/2026"
   if (!str) return null;
   const m = str.trim().match(/(\d{2})\/(\d{2})\/(\d{4})\s*(\d{2}:\d{2})?/);
   if (!m) return null;
@@ -26,29 +28,13 @@ function isoDate(d) {
   return d ? new Date(d).toISOString().slice(0, 10) : null;
 }
 
-// ─── Port code → city name mapping ─────────────────────────────────────────
-
-const PORT_NAMES = {
-  'FIHEL': 'Helsinki, FI', 'DEBRV': 'Bremerhaven, DE', 'DEHAM': 'Hamburg, DE',
-  'USHOU': 'Houston, US', 'USNYC': 'New York, US', 'USLAX': 'Los Angeles, US',
-  'NLRTM': 'Rotterdam, NL', 'GBSOU': 'Southampton, GB', 'CNSHA': 'Shanghai, CN',
-  'SGSIN': 'Singapore, SG', 'HKHKG': 'Hong Kong, HK', 'JPYOK': 'Yokohama, JP',
-  'KRPUS': 'Busan, KR', 'FIRAU': 'Rauma, FI', 'FIKTK': 'Kotka, FI',
-  'BEANR': 'Antwerp, BE', 'PKQCT': 'Karachi, PK', 'INMUN': 'Mundra, IN',
-  'CNDAL': 'Dalian, CN', 'FIKOK': 'Kokkola, FI', 'FIOUL': 'Oulu, FI',
-  'SEGOT': 'Gothenburg, SE', 'SESTH': 'Stockholm, SE',
-};
-
-function portName(code) {
-  return PORT_NAMES[code] || code;
-}
-
 // ─── Hapag-Lloyd Parser ─────────────────────────────────────────────────────
 
 export function parseHapagLloydBooking(text) {
   if (!text) return null;
 
-  const isHL = /hapag.?lloyd/i.test(text) || /HLCU/i.test(text) || /Booking\s*Confirmation[\s\S]{0,30}ORIGINAL/i.test(text);
+  // Detect carrier
+  const isHL = /hapag.?lloyd/i.test(text) || /HLCU/i.test(text) || /booking\s*confirmation.*original/i.test(text);
   if (!isHL) return null;
 
   const result = {
@@ -61,73 +47,107 @@ export function parseHapagLloydBooking(text) {
     commodity: null,
   };
 
-  // ── References (work on full text, no line splitting needed) ──
-  const ref = (rx) => { const m = text.match(rx); return m ? m[1].trim() : null; };
-  result.references.ourReference = ref(/Our\s*Reference:\s*(\d+)/i);
-  result.references.yourReference = ref(/Your\s*Reference:\s*(\S+(?:\s+\d+)?)/i);
-  result.references.blNumber = ref(/BL\/SWB\s*No\(?s?\)?\.?:\s*(\S+)/i);
-  result.references.quotationNumber = ref(/Quotation\s*No\.?:\s*(\S+)/i);
-  result.references.bookingDate = ref(/Booking\s*Date:\s*([\d\-\w]+)/i);
+  // ── References ──
+  const refPatterns = [
+    [/Our\s*Reference[:\s]*(\S+)/i, 'ourReference'],
+    [/Your\s*Reference[:\s]*(\S+)/i, 'yourReference'],
+    [/BL\/SWB\s*No[^:]*[:\s]*(\S+)/i, 'blNumber'],
+    [/Quotation\s*No[^:]*[:\s]*(\S+)/i, 'quotationNumber'],
+    [/Booking\s*Date[:\s]*([\d\-\w]+)/i, 'bookingDate'],
+    [/Date\s*of\s*Issue[:\s]*([\d\-\w]+)/i, 'issueDate'],
+  ];
+  for (const [rx, key] of refPatterns) {
+    const m = text.match(rx);
+    if (m) result.references[key] = m[1].trim();
+  }
 
-  // ── Routing — extract section between "From To By ETD ETA" and "Import terminal" ──
-  const routingMatch = text.match(/From\s+To\s+By\s+ETD\s+ETA\s+([\s\S]*?)Import\s*terminal/i);
-  if (routingMatch) {
-    const routingText = routingMatch[1];
+  // ── Routing legs ──
+  // Pattern: "From: ORIGIN → To: DEST" + "By: Vessel NAME, Voy. No: X, ETD: date, ETA: date"
+  const routingBlocks = text.split(/(?=From:)/gi).filter(b => /From:/i.test(b));
+  for (const block of routingBlocks) {
+    const from = block.match(/From:\s*(.+?)(?:\s*→|\s*To:)/i)?.[1]?.trim();
+    const to = block.match(/To:\s*(.+?)(?:\n|By:)/i)?.[1]?.trim();
+    const vessel = block.match(/(?:By:.*?Vessel|Vessel)\s+([^,\n]+)/i)?.[1]?.trim();
+    const voyage = block.match(/Voy(?:age)?\.?\s*(?:No)?[:\s]*([^\s,]+)/i)?.[1]?.trim();
+    const imoMatch = block.match(/IMO\s*(?:No|Number)?[:\s]*(\d{7,})/i);
+    const imo = imoMatch?.[1] || null;
+    const etdStr = block.match(/ETD[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
+    const etaStr = block.match(/ETA[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
 
-    // Find all port codes in routing section
-    const allCodes = [...routingText.matchAll(/\(([A-Z]{5})\)/g)].map(m => m[1]);
-    // Deduplicate consecutive identical codes
-    const codes = allCodes.filter((c, i) => i === 0 || c !== allCodes[i - 1]);
-
-    // Find all date+time pairs in routing section
-    const dates = [...routingText.matchAll(/(\d{2}-\w{3}-\d{4})\s+(\d{2}:\d{2})/g)];
-
-    // Find vessel names — look for "Vessel XXXX" patterns
-    const vessels = [...routingText.matchAll(/Vessel\s+([A-Z][A-Z\s]+?)(?:\s+DP\s+Voyage|\s+$)/gi)].map(m => m[1].trim());
-
-    // Find voyage numbers
-    const voyages = [...routingText.matchAll(/Voy\.\s*No:\s*(\S+)/gi)].map(m => m[1].trim());
-
-    // Build legs from consecutive port code pairs
-    for (let i = 0; i < codes.length - 1; i++) {
-      const dateIdx = i * 2;
+    if (from && to) {
       result.routing.push({
-        from: portName(codes[i]),
-        to: portName(codes[i + 1]),
-        vessel: vessels[i] || null,
-        voyage: voyages[i] || null,
-        etd: dates[dateIdx] ? parseHLDate(dates[dateIdx][1] + ' ' + dates[dateIdx][2]) : null,
-        eta: dates[dateIdx + 1] ? parseHLDate(dates[dateIdx + 1][1] + ' ' + dates[dateIdx + 1][2]) : null,
+        from: cleanPort(from),
+        to: cleanPort(to),
+        vessel: vessel || null,
+        voyage: voyage || null,
+        imo: imo || null,
+        etd: parseHLDate(etdStr),
+        eta: parseHLDate(etaStr),
       });
     }
   }
 
-  // ── Deadlines — use targeted regex on full text ──
-  const dlPatterns = [
-    { rx: /Shipping\s*instruction\s*closing[\s\S]{0,80}?(\d{2}-\w{3}-\d{4})\s+(\d{2}:\d{2})/i, type: 'si_closing', label: 'SI Closing' },
-    { rx: /VGM\s*cut[\-\s]*off[\s\S]{0,80}?(\d{2}-\w{3}-\d{4})\s+(\d{2}:\d{2})/i, type: 'vgm_cutoff', label: 'VGM Cut-off' },
-    { rx: /FCL\s*delivery\s*cut[\-\s]*off[\s\S]{0,80}?(\d{2}-\w{3}-\d{4})\s+(\d{2}:\d{2})/i, type: 'fcl_delivery_cutoff', label: 'FCL Delivery Cut-off' },
+  // Also try table-style routing (tab/space separated columns)
+  if (result.routing.length === 0) {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Look for port code patterns like (FIHEL) → (DEBRV)
+      const portMatch = line.match(/([A-Z\s\-]+)\s*\(([A-Z]{5})\)\s+([A-Z\s\-]+)\s*\(([A-Z]{5})\)/);
+      if (portMatch) {
+        // Look ahead for vessel/voyage/ETD/ETA in next few lines
+        const context = lines.slice(i, i + 5).join(' ');
+        const vessel = context.match(/(?:Vessel|By)\s+([A-Z][A-Z\s]+?)(?:\s*,|\s*Voy|\s*DP)/i)?.[1]?.trim();
+        const voyage = context.match(/Voy(?:age)?\.?\s*(?:No)?[:\s]*([^\s,]+)/i)?.[1]?.trim();
+        const etdStr = context.match(/ETD[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
+        const etaStr = context.match(/ETA[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
+        // Also try date patterns like "04-May-2026 18:00  08-May-2026 08:02"
+        const dates = context.match(/(\d{2}-\w{3}-\d{4}\s+\d{2}:\d{2})/g) || [];
+
+        result.routing.push({
+          from: `${portMatch[1].trim()} (${portMatch[2]})`,
+          to: `${portMatch[3].trim()} (${portMatch[4]})`,
+          vessel: vessel || null,
+          voyage: voyage || null,
+          etd: parseHLDate(etdStr || dates[0]),
+          eta: parseHLDate(etaStr || dates[1]),
+        });
+      }
+    }
+  }
+
+  // ── Deadlines ──
+  const deadlinePatterns = [
+    { rx: /Shipping\s*instruction\s*closing[^]*?(\d{2}-\w{3}-\d{4}\s*\d{2}:\d{2})/i, type: 'si_closing', label: 'SI Closing' },
+    { rx: /VGM\s*cut[\-\s]*off[^]*?(\d{2}-\w{3}-\d{4}\s*\d{2}:\d{2})/i, type: 'vgm_cutoff', label: 'VGM Cut-off' },
+    { rx: /FCL\s*delivery\s*cut[\-\s]*off[^]*?(\d{2}-\w{3}-\d{4}\s*\d{2}:\d{2})/i, type: 'fcl_delivery_cutoff', label: 'FCL Delivery Cut-off' },
   ];
-  for (const { rx, type, label } of dlPatterns) {
+  for (const { rx, type, label } of deadlinePatterns) {
     const m = text.match(rx);
-    if (m) result.deadlines.push({ type, label, date: parseHLDate(m[1] + ' ' + m[2]) });
+    if (m) {
+      result.deadlines.push({ type, label, date: parseHLDate(m[1]) });
+    }
   }
 
   // ── Container info ──
-  const summaryMatch = text.match(/Summary:\s*([\dx]+\s*\w+)/i);
+  const summaryMatch = text.match(/Summary[:\s]*([\dx]+\s*\w+)/i);
   if (summaryMatch) result.container.summary = summaryMatch[1].trim();
 
-  const contTypeMatch = text.match(/Container\s*Type\s+([^\n]+?)(?:\s+Commodity|\s+Customs)/i);
+  const contTypeMatch = text.match(/Container\s*Type[:\s]*([^\n]+)/i);
   if (contTypeMatch) result.container.type = contTypeMatch[1].trim();
 
-  const commodityMatch = text.match(/Commodity\s+Description:\s*(.+?)(?:\s+Gross\s+Weight|\s+Customs)/i);
+  const commodityMatch = text.match(/Commodity[:\s]*(.+?)(?:Gross|$)/i);
   if (commodityMatch) result.commodity = commodityMatch[1].trim();
 
-  const grossMatch = text.match(/Gross\s*Weight:\s*([\d,\.]+)\s*(\w+)/i);
+  const grossMatch = text.match(/Gross\s*Weight[:\s]*([\d,\.]+)\s*(\w+)/i);
   if (grossMatch) result.container.grossWeight = grossMatch[1].replace(',', '.') + ' ' + grossMatch[2];
 
-  const emptyPickup = text.match(/Empty\s*pick\s*up\s*date\/time\s+(\d{2}-\w{3}-\d{4})/i);
+  const emptyPickup = text.match(/Empty\s*pick\s*up[:\s]*([\d\-\w]+)/i);
   if (emptyPickup) result.container.emptyPickupDate = parseHLDate(emptyPickup[1]);
+
+  const depotMatch = text.match(/Empty\s*pick\s*up\s*depot[:\s]*([^\n]+)/i) ||
+                     text.match(/pick\s*up\s*depot[:\s]*([^\n]+)/i);
+  if (depotMatch) result.container.emptyPickupDepot = depotMatch[1].trim();
 
   return result;
 }
@@ -151,60 +171,139 @@ export function parseMSCBooking(text) {
   };
 
   // ── References ──
-  const ref = (rx) => { const m = text.match(rx); return m ? m[1].trim() : null; };
-  result.references.bookingReference = ref(/BOOKING\s*REFERENCE[\s\S]*?(\d{2}[A-Z]{2}\d+)/i);
-  result.references.swbNumber = ref(/ORIGINAL\/SEA\s*WAYBILL[\s\S]*?NUMBER[\s:]*(\S+)/i);
-  result.references.customerReference = ref(/CUSTOMER\s*REFERENCE(?:\s*NUMBER)?[\s:]*(.+?)(?:\n|GATE|PURCHASE)/i);
-  result.references.bookingDate = ref(/BOOKING\s*DATE[\s:]*([\d\/]+)/i);
+  const refPatterns = [
+    [/BOOKING\s*REFERENCE[:\s]*(\S+)/i, 'bookingReference'],
+    [/ORIGINAL\/SEA\s*WAYBILL[^]*?NUMBER[:\s]*(\S+)/i, 'swbNumber'],
+    [/CUSTOMER\s*REFERENCE(?:\s*NUMBER)?[:\s]*(.+)/i, 'customerReference'],
+    [/BOOKING\s*DATE[:\s]*([\d\/]+)/i, 'bookingDate'],
+    [/SERVICE\s*CONTRACT\/RATE\s*REF[^:]*[:\s]*(\S+)/i, 'serviceContract'],
+    [/EDI\s*TRANSACTION[^:]*[:\s]*(\S+)/i, 'ediTransaction'],
+  ];
+  for (const [rx, key] of refPatterns) {
+    const m = text.match(rx);
+    if (m) result.references[key] = m[1].trim();
+  }
 
   // ── Routing ──
-  const pol = ref(/PORT\s*OF\s*LOADING[\s:]*([A-Z\s]+?)(?:\n|VESSEL|EST)/i);
-  const vessel1 = ref(/VESSEL\s*(?:NAME)?\s*(?:\/\s*FLAG)?[\s:]*([^\n(]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i);
-  const voy1 = ref(/VOYAGE\s*(?:NUMBER)?[\s:]*(\S+)/i);
-
-  const arrDepMatch = text.match(/EST\.\s*TIME\s*OF\s*ARRIVAL\/DEPARTURE[\s:]*([\d\/]+\s*[\d:]+)\s+([\d\/]+\s*[\d:]+)/i);
+  // Port of Loading
+  const pol = text.match(/PORT\s*OF\s*LOADING[:\s]*([A-Z\s]+?)(?:\n|VESSEL)/i)?.[1]?.trim();
+  
+  // First vessel — extract name and IMO (LLOYDS NO.) from format: "MSC VALA II (LLOYDS NO. 9344722) / PT"
+  const vessel1Raw = text.match(/VESSEL\s*(?:NAME)?\s*(?:\/\s*FLAG)?[:\s]*([^\n]+)/i)?.[1] || '';
+  const vessel1 = vessel1Raw.match(/^([^\n(\/]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i)?.[1]?.trim() ||
+                  vessel1Raw.split(/[\n(\/]/)[0]?.trim() || null;
+  const vessel1IMO = vessel1Raw.match(/LLOYDS\s*NO\.?\s*(\d{7,})/i)?.[1] ||
+                     vessel1Raw.match(/IMO[:\s]*(\d{7,})/i)?.[1] || null;
+  const voy1 = text.match(/VOYAGE\s*(?:NUMBER)?[:\s]*(\S+)/i)?.[1]?.trim();
+  
+  // ETD/ETA for loading port — MSC format: "EST. TIME OF ARRIVAL/DEPARTURE" followed by two dates
+  const arrDepMatch = text.match(/EST\.\s*TIME\s*OF\s*ARRIVAL\/DEPARTURE[:\s]*([\d\/]+\s*[\d:]+)\s+([\d\/]+\s*[\d:]+)/i);
+  const loadingETA = arrDepMatch ? parseMSCDate(arrDepMatch[1]) : null;
   const loadingETD = arrDepMatch ? parseMSCDate(arrDepMatch[2]) : null;
 
-  const ts1 = ref(/PORT\s*OF\s*TRANSHIPMENT\s*N.?1[\s:]*([A-Z\s]+?)(?:\n|CONNECTING)/i);
-  const cv1 = ref(/CONNECTING\s*VESSEL\s*N.?1[\s\S]*?(?:\/\s*FLAG)?[\s:]*([^\n(]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i);
-  const ts1ETD = ref(/PORT\s*OF\s*TRANSHIPMENT\s*N.?1[\s\S]*?EST\.\s*TIME\s*OF\s*DEPARTURE[\s:]*([\d\/]+\s*[\d:]+)/i);
+  // Transhipment ports
+  const ts1 = text.match(/PORT\s*OF\s*TRANSHIPMENT\s*N[°*]?1[:\s]*([A-Z\s]+?)(?:\n|CONNECTING)/i)?.[1]?.trim();
+  const cv1 = text.match(/CONNECTING\s*VESSEL\s*N[°*]?1\s*(?:\/\s*FLAG)?[:\s]*([^\n(]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i)?.[1]?.trim();
+  const cv1Voy = text.match(/CONNECTING\s*VESSEL\s*N[°*]?1[^]*?VOYAGE\s*(?:NUMBER)?[:\s]*(\S+)/i)?.[1]?.trim();
+  const ts1ETD = text.match(/PORT\s*OF\s*TRANSHIPMENT\s*N[°*]?1[^]*?EST\.\s*TIME\s*OF\s*DEPARTURE[:\s]*([\d\/]+\s*[\d:]+)/i)?.[1];
 
-  const ts2 = ref(/PORT\s*OF\s*TRANSHIPMENT\s*N.?2[\s:]*([A-Z\s]+?)(?:\n|CONNECTING)/i);
-  const ts2ETD = ref(/PORT\s*OF\s*TRANSHIPMENT\s*N.?2[\s\S]*?EST\.\s*TIME\s*OF\s*DEPARTURE[\s:]*([\d\/]+\s*[\d:]+)/i);
+  const ts2 = text.match(/PORT\s*OF\s*TRANSHIPMENT\s*N[°*]?2[:\s]*([A-Z\s]+?)(?:\n|CONNECTING)/i)?.[1]?.trim();
+  const cv2 = text.match(/CONNECTING\s*VESSEL\s*N[°*]?2\s*(?:\/\s*FLAG)?[:\s]*([^\n(]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i)?.[1]?.trim();
+  const ts2ETD = text.match(/PORT\s*OF\s*TRANSHIPMENT\s*N[°*]?2[^]*?EST\.\s*TIME\s*OF\s*DEPARTURE[:\s]*([\d\/]+\s*[\d:]+)/i)?.[1];
 
-  const pod = ref(/PORT\s*OF\s*DISCHARGE[\s:]*([A-Z\s\-]+?)(?:\n|TERMINAL|EST)/i);
-  const podETA = ref(/EST\.\s*TIME\s*OF\s*ARRIVAL\s+([\d\/]+\s*[\d:]+)/i);
+  // Port of Discharge
+  const pod = text.match(/PORT\s*OF\s*DISCHARGE[:\s]*([A-Z\s\-]+?)(?:\n|TERMINAL|EST)/i)?.[1]?.trim();
+  const podETA = text.match(/PORT\s*OF\s*DISCHARGE[^]*?EST\.\s*TIME\s*OF\s*ARRIVAL[:\s]*([\d\/]+\s*[\d:]+)/i)?.[1];
 
+  // Fallback: find dates near port of discharge
+  const podETAFallback = text.match(/EST\.\s*TIME\s*OF\s*ARRIVAL\s+([\d\/]+\s*[\d:]+)/i)?.[1];
+
+  // Build routing legs
   if (pol) {
-    result.routing.push({ from: pol, to: ts1 || pod || '', vessel: vessel1 || null, voyage: voy1 || null, etd: loadingETD, eta: null });
-  }
-  if (ts1 && (ts2 || pod)) {
-    result.routing.push({ from: ts1, to: ts2 || pod, vessel: cv1 || null, voyage: null, etd: parseMSCDate(ts1ETD), eta: null });
-  }
-  if (ts2 && pod) {
-    result.routing.push({ from: ts2, to: pod, vessel: null, voyage: null, etd: parseMSCDate(ts2ETD), eta: parseMSCDate(podETA) });
-  } else if (pod && result.routing.length > 0) {
-    result.routing[result.routing.length - 1].eta = parseMSCDate(podETA);
+    const firstLeg = {
+      from: pol,
+      to: ts1 || pod || '',
+      vessel: vessel1 || null,
+      voyage: voy1 || null,
+      imo: vessel1IMO || null,
+      etd: loadingETD,
+      eta: null,
+    };
+    result.routing.push(firstLeg);
   }
 
-  // ── Deadlines ──
-  const cutoffs = [
-    { rx: /SHIPPING\s*INSTRUCTIONS?\s*CUT[\-\s]*OFF[\s:]*([\d\/]+\s*[\d:]+)/i, type: 'si_closing', label: 'SI Cut-off' },
-    { rx: /HAZ\/IMO\s*CUT[\-\s]*OFF[\s:]*([\d\/]+\s*[\d:]+)/i, type: 'haz_cutoff', label: 'HAZ/IMO Cut-off' },
-    { rx: /VERIFIED\s*GROSS\s*MASS[\s\S]{0,40}?CUT[\-\s]*OFF[\s:]*([\d\/]+\s*[\d:]+)/i, type: 'vgm_cutoff', label: 'VGM (SOLAS) Cut-off' },
-    { rx: /SPECIAL\s*CUT[\-\s]*OFF\s*\(\s*MRN\s*\)[\s:]*([\d\/]+\s*[\d:]+)/i, type: 'mrn_cutoff', label: 'MRN Cut-off' },
+  if (ts1 && (ts2 || pod)) {
+    result.routing.push({
+      from: ts1,
+      to: ts2 || pod,
+      vessel: cv1 || null,
+      voyage: cv1Voy || null,
+      etd: parseMSCDate(ts1ETD),
+      eta: null,
+    });
+  }
+
+  if (ts2 && pod) {
+    result.routing.push({
+      from: ts2,
+      to: pod,
+      vessel: cv2 || null,
+      voyage: null,
+      etd: parseMSCDate(ts2ETD),
+      eta: parseMSCDate(podETA || podETAFallback),
+    });
+  } else if (pod && result.routing.length > 0) {
+    // Set final ETA on last leg
+    const lastLeg = result.routing[result.routing.length - 1];
+    if (lastLeg.to === pod || !lastLeg.eta) {
+      lastLeg.eta = parseMSCDate(podETA || podETAFallback);
+    }
+  }
+
+  // ── Deadlines / Cut-offs ──
+  const cutoffPatterns = [
+    { rx: /SHIPPING\s*INSTRUCTIONS?\s*CUT[\-\s]*OFF[:\s]*([\d\/]+\s*[\d:]+)/i, type: 'si_closing', label: 'SI Cut-off' },
+    { rx: /HAZ\/IMO\s*CUT[\-\s]*OFF[:\s]*([\d\/]+\s*[\d:]+)/i, type: 'haz_cutoff', label: 'HAZ/IMO Cut-off' },
+    { rx: /VERIFIED\s*GROSS\s*MASS[^]*?CUT[\-\s]*OFF[:\s]*([\d\/]+\s*[\d:]+)/i, type: 'vgm_cutoff', label: 'VGM (SOLAS) Cut-off' },
+    { rx: /SPECIAL\s*CUT[\-\s]*OFF\s*\(\s*MRN\s*\)[:\s]*([\d\/]+\s*[\d:]+)/i, type: 'mrn_cutoff', label: 'MRN Cut-off' },
   ];
-  for (const { rx, type, label } of cutoffs) {
+  for (const { rx, type, label } of cutoffPatterns) {
     const m = text.match(rx);
-    if (m) result.deadlines.push({ type, label, date: parseMSCDate(m[1]) });
+    if (m) {
+      result.deadlines.push({ type, label, date: parseMSCDate(m[1]) });
+    }
+  }
+
+  // Gate-in
+  const gateInFirst = text.match(/GATE[\-\s]*IN[^]*?First\s*Receiving[^]*?([\d\/]+\s*[\d:]+)/i)?.[1];
+  const gateInCutoff = text.match(/GATE[\-\s]*IN[^]*?Cut[\-\s]*off[^]*?([\d\/]+\s*[\d:]+)/i) ||
+                       text.match(/GATE[\-\s]*IN[^]*?CUT[\-\s]*OFF\s*\(?Date\/Time\)?[:\s]*([\d\/]+\s*[\d:]+)/i);
+  if (gateInFirst) {
+    result.deadlines.push({ type: 'gate_in_first', label: 'Gate-in First Receiving', date: parseMSCDate(gateInFirst) });
+  }
+  if (gateInCutoff) {
+    result.deadlines.push({ type: 'gate_in_cutoff', label: 'Gate-in Cut-off', date: parseMSCDate(gateInCutoff[1]) });
   }
 
   // ── Container info ──
-  const totalMatch = text.match(/TOTAL\s*CONTAINER\s*\(?S?\)?[\s:]*(\d+)/i);
+  const totalMatch = text.match(/TOTAL\s*CONTAINER\s*\(?S?\)?[:\s]*(\d+)/i);
   if (totalMatch) result.container.count = +totalMatch[1];
-  const equipMatch = text.match(/EQUIP(?:MENT)?\.?\s*TYPE[^:]*[\s:]*(\w+)\s*(?:QUANTITY[\s:]*)?(\d+)?/i);
-  if (equipMatch) { result.container.equipType = equipMatch[1]; if (equipMatch[2]) result.container.count = +equipMatch[2]; }
-  const cargoDesc = ref(/CARGO\s*DESCRIPTION[\s\S]{0,20}?([A-Z][A-Z\s,]+?)(?:\s+HS\s*CODE|\s+\d)/i);
+
+  const teusMatch = text.match(/TEUS?[:\s]*(\d+)/i);
+  if (teusMatch) result.container.teus = +teusMatch[1];
+
+  const socMatch = text.match(/S\.?O\.?C[:\s]*(\d+)/i);
+  if (socMatch) result.container.soc = +socMatch[1];
+
+  const equipMatch = text.match(/EQUIP(?:MENT)?\.?\s*TYPE[^:]*[:\s]*(\w+)\s*(?:QUANTITY[:\s]*)?(\d+)?/i) ||
+                     text.match(/EQUIP(?:MENT)?[:\s]*(\w+)[,\s]+Quantity\s+(\d+)/i);
+  if (equipMatch) {
+    result.container.equipType = equipMatch[1];
+    if (equipMatch[2]) result.container.count = +equipMatch[2];
+  }
+
+  // Commodity
+  const cargoDesc = text.match(/CARGO\s*DESCRIPTION[^]*?([A-Z][A-Z\s,]+?)(?:\s+HS\s*CODE|\s+\d)/i)?.[1]?.trim();
   if (cargoDesc) result.commodity = cargoDesc;
 
   return result;
@@ -228,30 +327,35 @@ export function bookingToShipmentUpdates(parsed) {
 
   updates.carrier = parsed.carrier;
 
-  if (firstLeg?.from) updates.origin = firstLeg.from;
-  if (lastLeg?.to) updates.destination = lastLeg.to;
+  // Origin/destination from first/last routing leg
+  if (firstLeg?.from) updates.origin = cleanPort(firstLeg.from);
+  if (lastLeg?.to) updates.destination = cleanPort(lastLeg.to);
+
+  // ETD = first leg departure, ETA = last leg arrival
   if (firstLeg?.etd) updates.etd = isoDate(firstLeg.etd);
   if (lastLeg?.eta) updates.eta = isoDate(lastLeg.eta);
+
+  // Vessel + voyage from first ocean leg
   if (firstLeg?.vessel) updates.vessel = firstLeg.vessel;
   if (firstLeg?.voyage) updates.voyage = firstLeg.voyage;
+  if (firstLeg?.imo)    updates.imoNumber = firstLeg.imo;
 
-  // Deduplicated routing string
+  // Full routing string
   if (parsed.routing.length > 0) {
-    const ports = [parsed.routing[0].from];
-    for (const leg of parsed.routing) {
-      if (leg.to && leg.to !== ports[ports.length - 1]) ports.push(leg.to);
-    }
-    updates.routing = ports.join(' → ');
+    updates.routing = parsed.routing
+      .map(l => `${cleanPort(l.from)} → ${cleanPort(l.to)}`)
+      .join(' → ')
+      .replace(/ → ([^→]+) → \1/g, ' → $1'); // dedupe
   }
 
-  // Carrier booking number — stored separately, does NOT overwrite shipment ref
+  // Booking number / reference
   if (parsed.carrier === 'Hapag-Lloyd') {
-    if (parsed.references.ourReference) updates.carrierBookingNumber = parsed.references.ourReference;
+    if (parsed.references.ourReference) updates.bookingNumber = parsed.references.ourReference;
     if (parsed.references.yourReference) updates.customerRef = parsed.references.yourReference;
     if (parsed.references.blNumber) updates.blNumber = parsed.references.blNumber;
     if (parsed.references.quotationNumber) updates.quotationNumber = parsed.references.quotationNumber;
   } else if (parsed.carrier === 'MSC') {
-    if (parsed.references.bookingReference) updates.carrierBookingNumber = parsed.references.bookingReference;
+    if (parsed.references.bookingReference) updates.bookingNumber = parsed.references.bookingReference;
     if (parsed.references.customerReference) updates.customerRef = parsed.references.customerReference;
     if (parsed.references.swbNumber) updates.blNumber = parsed.references.swbNumber;
   }
@@ -263,45 +367,50 @@ export function bookingToShipmentUpdates(parsed) {
     updates.containerTypeId = typeMap[parsed.container.equipType] || parsed.container.equipType;
   }
   if (parsed.container.summary) {
+    // "1x45GP" → count + type
     const sm = parsed.container.summary.match(/(\d+)\s*x?\s*(\w+)/i);
-    if (sm) { updates.containerCount = +sm[1]; updates.containerTypeId = sm[2]; }
+    if (sm) {
+      updates.containerCount = +sm[1];
+      updates.containerTypeId = sm[2];
+    }
   }
 
   // Milestones from deadlines
   updates.milestones = parsed.deadlines.map(d => ({
-    id: d.type + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
+    id: d.type + '_' + Date.now(),
     label: d.label,
     date: isoDate(d.date),
     dateTime: d.date,
     type: d.type,
-    done: false,
+    completed: false,
     source: 'booking_confirmation',
   }));
 
-  // Add ETD/ETA as milestones from routing legs
+  // Add routing leg ETDs as milestones
   parsed.routing.forEach((leg, i) => {
-    if (leg.etd) {
+    if (i > 0 && leg.etd) {
       updates.milestones.push({
-        id: `leg_dep_${i}_${Date.now()}`,
-        label: i === 0 ? `ETD ${leg.from}` : `Depart ${leg.from}`,
-        date: isoDate(leg.etd), dateTime: leg.etd,
-        type: i === 0 ? 'etd_origin' : 'transhipment_departure',
-        done: false, source: 'booking_confirmation',
-      });
-    }
-    if (leg.eta && i === parsed.routing.length - 1) {
-      updates.milestones.push({
-        id: `leg_arr_${i}_${Date.now()}`,
-        label: `ETA ${leg.to}`,
-        date: isoDate(leg.eta), dateTime: leg.eta,
-        type: 'eta_destination',
-        done: false, source: 'booking_confirmation',
+        id: `ts_dep_${i}_${Date.now()}`,
+        label: `Depart ${cleanPort(leg.from)}`,
+        date: isoDate(leg.etd),
+        dateTime: leg.etd,
+        type: 'transhipment_departure',
+        completed: false,
+        source: 'booking_confirmation',
       });
     }
   });
 
-  updates.milestones.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  // Store full parsed data for reference
   updates._parsedBooking = parsed;
 
   return updates;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function cleanPort(str) {
+  if (!str) return '';
+  // Remove trailing port codes like (FIHEL) and extra whitespace
+  return str.replace(/\s*\([A-Z]{5}\)/, '').replace(/\s+/g, ' ').trim();
 }

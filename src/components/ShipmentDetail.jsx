@@ -91,6 +91,7 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
       eta: shipment.eta || "",
       mode: shipment.mode || "ocean",
       customerRef: shipment.customerRef || "",
+      imoNumber: shipment.imoNumber || "",
     });
     setEditMilestones((shipment.milestones || []).map(m => ({ ...m })));
     setEditing(true);
@@ -109,6 +110,7 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
         containerType: containerLabel, containerTypeId: editForm.containerTypeId, containerCount: editForm.containerCount,
         etd: editForm.etd || null, eta: editForm.eta || null, mode: editForm.mode,
         customerRef: editForm.customerRef || null,
+        imoNumber: editForm.imoNumber || null,
       });
     } else if (tab === "milestones") {
       changes.milestones = editMilestones.filter(m => m.label.trim());
@@ -418,6 +420,10 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
                 <div><label style={labelStyle}>Vessel / Vehicle</label><input value={editForm.vessel} onChange={e => setField("vessel", e.target.value)} style={inputStyle} /></div>
                 <div><label style={labelStyle}>Voyage / Flight No.</label><input value={editForm.voyage} onChange={e => setField("voyage", e.target.value)} style={inputStyle} /></div>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={labelStyle}>IMO Number <span style={{ fontWeight: 400, color: T.text3 }}>(7 digits — enables direct vessel tracking links)</span></label>
+                <input value={editForm.imoNumber} onChange={e => setField("imoNumber", e.target.value)} placeholder="e.g. 9344722" style={{ ...inputStyle, fontFamily: "'JetBrains Mono', monospace" }} />
               </div>
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Routing</label>

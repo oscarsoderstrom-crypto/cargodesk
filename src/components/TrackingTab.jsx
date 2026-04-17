@@ -264,6 +264,7 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
               <Ship size={15} color={T.accent} />
               <span style={{ fontSize: 13, fontWeight: 600, color: T.text0 }}>{shipment.vessel}</span>
               {shipment.voyage && shipment.voyage !== 'TBD' && <span style={{ fontSize: 12, color: T.text3 }}>Voy. {shipment.voyage}</span>}
+              {shipment.imoNumber && <span style={{ fontSize: 11, color: T.text3, fontFamily: "'JetBrains Mono', monospace" }}>IMO {shipment.imoNumber}</span>}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               <button onClick={handleFetchPosition} disabled={loadingPos || !configured}
@@ -273,12 +274,20 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
                 {loadingPos ? 'Loading…' : 'Get Position'}
               </button>
               {/* MarineTraffic link */}
-              <a href={`https://www.marinetraffic.com/en/ais/index/search/all/keyword:${encodeURIComponent(shipment.vessel)}`}
+              <a href={
+                  shipment.imoNumber
+                    ? `https://www.marinetraffic.com/en/ais/details/ships/imo:${shipment.imoNumber}`
+                    : `https://www.marinetraffic.com/en/ais/index/search/all/keyword:${encodeURIComponent(shipment.vessel)}`
+                }
                 target="_blank" rel="noopener noreferrer"
                 style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, textDecoration: 'none' }}>
                 <ExternalLink size={11} /> MarineTraffic
               </a>
-              <a href={`https://www.vesselfinder.com/?name=${encodeURIComponent(shipment.vessel)}`}
+              <a href={
+                  shipment.imoNumber
+                    ? `https://www.vesselfinder.com/?imo=${shipment.imoNumber}`
+                    : `https://www.vesselfinder.com/?name=${encodeURIComponent(shipment.vessel)}`
+                }
                 target="_blank" rel="noopener noreferrer"
                 style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, textDecoration: 'none' }}>
                 <ExternalLink size={11} /> VesselFinder
