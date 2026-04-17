@@ -273,7 +273,7 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
                 {loadingPos ? 'Loading…' : 'Get Position'}
               </button>
               {/* MarineTraffic link */}
-              <a href={`https://www.marinetraffic.com/en/ais/home/centerx:0/centery:0/zoom:4`}
+              <a href={`https://www.marinetraffic.com/en/ais/home/shipname:${encodeURIComponent(shipment.vessel)}`}
                 target="_blank" rel="noopener noreferrer"
                 style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, textDecoration: 'none' }}>
                 <ExternalLink size={11} /> MarineTraffic
