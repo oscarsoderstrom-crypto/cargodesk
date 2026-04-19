@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
-import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot, LogOut } from "lucide-react";
+import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot, LogOut, Mail } from "lucide-react";
 import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates, getDbSource, getQuotes } from "./db/schema.js";
 import { getCurrentUser, logout } from "./db/auth.js";
 import { hasLocalPassword, hasActiveLocalSession, clearLocalSession } from "./utils/localAuth.js";
@@ -17,6 +17,7 @@ import MorningBrief from "./components/MorningBrief.jsx";
 import MonthlyReportModal from "./components/MonthlyReportModal.jsx";
 import WeeklySnapshotReport from "./components/WeeklySnapshotReport.jsx";
 import AssistantPanel from "./components/AssistantPanel.jsx";
+import CustomerStatusReport from "./components/CustomerStatusReport.jsx";
 import { extractTextFromPDF, fileToBase64 } from "./parsers/pdfParser.js";
 import { parseDocumentText } from "./parsers/carrierParsers.js";
 import { fetchRates, toEUR, formatEUR, FALLBACK_RATES } from "./utils/currency.js";
@@ -151,6 +152,8 @@ export default function App(){
   const[showWeeklyReport,setShowWeeklyReport]=useState(false);
   // Phase D state
   const[showAssistant,setShowAssistant]=useState(false);
+  const[showStatusReport,setShowStatusReport]=useState(false);
+  const[statusReportProjectId,setStatusReportProjectId]=useState(null);
 
   // Check existing session on mount
   useEffect(()=>{
@@ -269,6 +272,7 @@ export default function App(){
           <div onClick={()=>setShowMorningBrief(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><Calendar size={18}/> Morning Brief</div>
           <div onClick={()=>setShowWeeklyReport(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><List size={18}/> Weekly Report</div>
           <div onClick={()=>setShowMonthlyReport(true)} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><BarChart3 size={18}/> Monthly Report</div>
+          <div onClick={()=>{setStatusReportProjectId(null);setShowStatusReport(true);}} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",borderRadius:8,marginBottom:4,fontSize:14,fontWeight:500,color:"#8494B0",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.08)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}><Mail size={18}/> Status Report</div>
         </div>
         {/* Phase D: AI Assistant button */}
         <div style={{marginTop:8,paddingTop:8,borderTop:"1px solid #1A2236"}}>
@@ -316,7 +320,8 @@ export default function App(){
                     <div style={{width:8,height:8,borderRadius:"50%",background:pc.color}}/>
                     <span style={{fontWeight:700,fontSize:14,color:pc.color}}>{p.name}</span>
                     <span style={{fontSize:12,color:T.text2}}>{p.customer} • {ps.length}</span></div>
-                  <div onClick={e=>{e.stopPropagation();setProjectView(p.id);}} style={{fontSize:11,padding:"3px 8px",borderRadius:4,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer",fontWeight:500}}>Overview</div></div>
+                  <div onClick={e=>{e.stopPropagation();setProjectView(p.id);}} style={{fontSize:11,padding:"3px 8px",borderRadius:4,color:T.accent,background:T.accentGlow,border:"1px solid rgba(59,130,246,0.2)",cursor:"pointer",fontWeight:500}}>Overview</div>
+                  <div onClick={e=>{e.stopPropagation();setStatusReportProjectId(p.id);setShowStatusReport(true);}} style={{fontSize:11,padding:"3px 8px",borderRadius:4,color:"#10B981",background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.2)",cursor:"pointer",fontWeight:500,display:"flex",alignItems:"center",gap:4}}><Mail size={11}/>Status Report</div></div>
                 {isExp&&<div style={{marginTop:4}}>{ps.map(s=><ShipRow key={s.id} shipment={s} onClick={()=>setSel(s.id)} onContextMenu={handleContextMenu} onDrop={handleDropOnRow} projectColor={pc}/>)}</div>}</div>;})}
             {filtered.filter(s=>!s.projectId).length>0&&<div style={{marginBottom:16}}>
               <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px"}}><Package size={16} color={T.text2}/><span style={{fontWeight:700,fontSize:14,color:T.text0}}>Loose Shipments</span></div>
@@ -333,4 +338,6 @@ export default function App(){
     {showWeeklyReport&&<WeeklySnapshotReport shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowWeeklyReport(false)} onNavigate={id=>{setSel(id);setProjectView(null);}}/>}
     {/* Phase D: AI Assistant */}
     {showAssistant&&<AssistantPanel shipments={shipments} projects={projects} quotes={quotes} rates={rates} isDark={isDark} onClose={()=>setShowAssistant(false)} onNavigate={id=>{setSel(id);setProjectView(null);setTab("dashboard");}} onDataChange={loadData} selectedShipment={sel ? shipments.find(s=>s.id===sel) : null}/>}
+    {/* Customer Status Report */}
+    {showStatusReport&&<CustomerStatusReport T={T} shipments={shipments} projects={projects} rates={rates} isDark={isDark} onClose={()=>setShowStatusReport(false)} initialProjectId={statusReportProjectId||projects[0]?.id}/>}
   </div></ThemeCtx.Provider>;}
