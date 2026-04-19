@@ -4,7 +4,7 @@
 
 import {
   getShipments, getShipment, addShipment, updateShipment, getNextRef,
-  addActivity, getDB,
+  addActivity, addDocument, getDB,
 } from '../db/schema.js';
 import { formatContainer } from '../utils/containers.js';
 
@@ -145,7 +145,7 @@ export function describeToolCall(name, input) {
  * Returns { success: bool, message: string }
  * onNavigate(shipmentId) is a callback to open the shipment in the UI.
  */
-export async function executeTool(name, input, onNavigate) {
+export async function executeTool(name, input, onNavigate, pendingDocSave = null) {
   try {
     switch (name) {
 
@@ -303,6 +303,24 @@ export async function executeTool(name, input, onNavigate) {
 
       case 'navigate_to_shipment': {
         if (onNavigate) onNavigate(input.shipmentId);
+        // Save any pending document (dropped in AI panel before shipment was open)
+        if (pendingDocSave) {
+          try {
+            await addDocument({
+              id: crypto.randomUUID(),
+              shipmentId: input.shipmentId,
+              ...pendingDocSave,
+            });
+            await addActivity({
+              id: crypto.randomUUID(), type: 'document',
+              message: `Document attached via AI: ${pendingDocSave.name}`,
+              shipmentId: input.shipmentId,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (err) {
+            console.error('Could not save pending document on navigate:', err);
+          }
+        }
         return { success: true, message: `Opened shipment ${input.shipmentId}` };
       }
 

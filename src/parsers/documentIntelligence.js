@@ -126,10 +126,10 @@ export function applyBookingToShipment(shipment, updates) {
 
   const updated = { ...shipment };
 
-  // Apply field updates — carrierBookingNumber is separate from ref
+  // Apply field updates (don't overwrite if already set, unless it's a refinement)
   const fields = ['carrier', 'origin', 'destination', 'etd', 'eta', 'vessel', 'voyage',
-                  'routing', 'carrierBookingNumber', 'customerRef', 'blNumber', 'quotationNumber',
-                  'containerCount', 'containerTypeId'];
+                  'routing', 'bookingNumber', 'customerRef', 'blNumber', 'quotationNumber',
+                  'containerCount', 'containerTypeId', 'imoNumber'];
 
   for (const field of fields) {
     if (updates[field] !== undefined && updates[field] !== null) {
@@ -145,84 +145,13 @@ export function applyBookingToShipment(shipment, updates) {
     updated.originalETA = updates.eta;
   }
 
-  // Merge milestones — update existing with dates, only add truly new ones
+  // Merge milestones (add new ones, don't duplicate by type)
   if (updates.milestones && updates.milestones.length > 0) {
-    const existing = (updated.milestones || []).map(m => ({ ...m }));
-    
-    // Normalize label for matching
-    const norm = (s) => (s || '').toLowerCase().replace(/[\s\-\/]/g, '').replace(/cut[\s\-]*off/i, 'cutoff');
-    
-    // Map of keywords to match existing milestones to parsed ones
-    const matchMap = [
-      { parsed: 'si_closing', keywords: ['sicutoff', 'siclosing', 'shippinginstruction'] },
-      { parsed: 'vgm_cutoff', keywords: ['vgmcutoff', 'vgm'] },
-      { parsed: 'fcl_delivery_cutoff', keywords: ['fcldeliverycutoff', 'fcldelivery'] },
-      { parsed: 'etd_origin', keywords: ['etdhelsinki', 'etdrauma', 'etdkotka', 'etdorigin'] },
-      { parsed: 'eta_destination', keywords: ['etahouston', 'etadestination', 'etashanghai', 'etadalian'] },
-      { parsed: 'transhipment_departure', keywords: ['departbremerhaven', 'departhamburg', 'departrotterdam', 'departantwerp', 'transhipment'] },
-    ];
-    
-    const usedExisting = new Set();
-    const toAdd = [];
-    
-    for (const newMs of updates.milestones) {
-      const newNorm = norm(newMs.label);
-      let matched = false;
-      
-      // Try to find matching existing milestone
-      for (let i = 0; i < existing.length; i++) {
-        if (usedExisting.has(i)) continue;
-        const exNorm = norm(existing[i].label);
-        
-        // Direct label match
-        if (exNorm === newNorm) {
-          if (newMs.date && (!existing[i].date || existing[i].date === null)) existing[i].date = newMs.date;
-          if (newMs.dateTime) existing[i].dateTime = newMs.dateTime;
-          existing[i].type = newMs.type;
-          existing[i].source = 'booking_confirmation';
-          usedExisting.add(i);
-          matched = true;
-          break;
-        }
-        
-        // Keyword-based match
-        const matchEntry = matchMap.find(mm => mm.parsed === newMs.type);
-        if (matchEntry && matchEntry.keywords.some(kw => exNorm.includes(kw) || kw.includes(exNorm))) {
-          if (newMs.date) existing[i].date = newMs.date;
-          if (newMs.dateTime) existing[i].dateTime = newMs.dateTime;
-          existing[i].type = newMs.type;
-          existing[i].source = 'booking_confirmation';
-          usedExisting.add(i);
-          matched = true;
-          break;
-        }
-        
-        // Fuzzy: "ETD Helsinki" matches "ETD Helsinki, FI"
-        if (exNorm.includes(newNorm.slice(0, 8)) && newNorm.includes(exNorm.slice(0, 8)) && exNorm.length > 3) {
-          if (newMs.date) existing[i].date = newMs.date;
-          if (newMs.dateTime) existing[i].dateTime = newMs.dateTime;
-          existing[i].type = newMs.type;
-          existing[i].source = 'booking_confirmation';
-          usedExisting.add(i);
-          matched = true;
-          break;
-        }
-      }
-      
-      if (!matched) {
-        // Check by type — don't add if same type already exists
-        const hasType = existing.some(m => m.type === newMs.type);
-        if (!hasType) toAdd.push(newMs);
-      }
-    }
-    
-    updated.milestones = [...existing, ...toAdd].sort((a, b) => {
-      // TBD dates go at their natural position, dated ones sort by date
-      if (!a.date && !b.date) return 0;
-      if (!a.date) return -1;
-      if (!b.date) return 1;
-      return (a.date || '').localeCompare(b.date || '');
-    });
+    const existing = updated.milestones || [];
+    const existingTypes = new Set(existing.map(m => m.type));
+    const newMilestones = updates.milestones.filter(m => !existingTypes.has(m.type));
+    updated.milestones = [...existing, ...newMilestones]
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   }
 
   // Store parsed booking data
@@ -230,10 +159,9 @@ export function applyBookingToShipment(shipment, updates) {
     updated.parsedBooking = updates._parsedBooking;
   }
 
-  // Do NOT overwrite ref (S26 number) with carrier booking number
-  // Advance status planned → booked when we have a carrier booking
-  if (updated.status === 'planned' && updates.carrierBookingNumber) {
-    updated.status = 'booked';
+  // Advance status Planned → Booked
+  if (updated.status === 'Planned' && updates.bookingNumber) {
+    updated.status = 'Booked';
   }
 
   updated.updatedAt = new Date().toISOString();

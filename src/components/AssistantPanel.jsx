@@ -205,6 +205,7 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
 
   const workerUrl = getAiWorkerUrl();
   const hasWorker = !!workerUrl;
+  const pendingDocSaveRef = useRef(null); // stores doc metadata to save on navigate
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -231,30 +232,24 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
         const textContent = rawText?.text || rawText || '';
         setPendingDoc({ name: file.name, text: textContent, summary });
 
-        // Save to Documents tab if a shipment is currently open
+        // Store for saving when Claude navigates to a shipment
+        pendingDocSaveRef.current = {
+          name: file.name,
+          type: analysis.isBookingConfirmation ? 'booking_confirmation' : 'document',
+          date: new Date().toISOString().split('T')[0],
+          quoteNumber: analysis.bookingData?.references?.quotationNumber || null,
+          bookingNumber: analysis.bookingData?.references?.bookingReference || analysis.bookingData?.references?.ourReference || null,
+        };
+
+        // If a shipment is already open, save immediately
         if (selectedShipment) {
           try {
-            const { addDocument } = await import('../db/schema.js');
-            const { addActivity } = await import('../db/schema.js');
-            await addDocument({
-              id: crypto.randomUUID(),
-              shipmentId: selectedShipment.id,
-              name: file.name,
-              type: analysis.isBookingConfirmation ? 'booking_confirmation' : 'document',
-              date: new Date().toISOString().split('T')[0],
-              quoteNumber: analysis.bookingData?.references?.quotationNumber || null,
-              bookingNumber: analysis.bookingData?.references?.bookingReference || analysis.bookingData?.references?.ourReference || null,
-            });
-            await addActivity({
-              id: crypto.randomUUID(), type: 'document',
-              message: `Document attached via AI assistant: ${file.name}`,
-              shipmentId: selectedShipment.id,
-              timestamp: new Date().toISOString(),
-            });
+            const { addDocument: addDoc, addActivity: addAct } = await import('../db/schema.js');
+            await addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...pendingDocSaveRef.current });
+            await addAct({ id: crypto.randomUUID(), type: 'document', message: `Document attached via AI: ${file.name}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+            pendingDocSaveRef.current = null;
             if (onDataChange) onDataChange();
-          } catch (err) {
-            console.error('Could not save document:', err);
-          }
+          } catch (err) { console.error('Could not save document:', err); }
         }
 
       } else if (name.endsWith('.msg')) {
@@ -262,18 +257,12 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
         if (msg) {
           const body = msg.bodyText || '';
           setPendingDoc({ name: file.name, text: `Subject: ${msg.subject}\nFrom: ${msg.sender}\n\n${body}`, summary: `Email: ${msg.subject}` });
-
-          // Save .msg to Documents tab if shipment open
+          pendingDocSaveRef.current = { name: file.name, type: 'email', date: new Date().toISOString().split('T')[0] };
           if (selectedShipment) {
             try {
-              const { addDocument } = await import('../db/schema.js');
-              await addDocument({
-                id: crypto.randomUUID(),
-                shipmentId: selectedShipment.id,
-                name: file.name,
-                type: 'email',
-                date: new Date().toISOString().split('T')[0],
-              });
+              const { addDocument: addDoc } = await import('../db/schema.js');
+              await addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...pendingDocSaveRef.current });
+              pendingDocSaveRef.current = null;
               if (onDataChange) onDataChange();
             } catch {}
           }
@@ -390,7 +379,13 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
     const actions = [];
 
     for (const tool of toolCalls) {
-      const result = await executeTool(tool.name, tool.input, onNavigate);
+      const docSave = pendingDocSaveRef.current;
+      const result = await executeTool(tool.name, tool.input, onNavigate, docSave);
+      // Clear the pending doc save after navigate_to_shipment consumed it
+      if (tool.name === 'navigate_to_shipment' && docSave) {
+        pendingDocSaveRef.current = null;
+        if (onDataChange) onDataChange();
+      }
       results.push({ tool_use_id: tool.id, ...result });
       actions.push(result);
     }
