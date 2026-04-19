@@ -6,13 +6,13 @@ import {
   ExternalLink, RefreshCw, MapPin, Ship, CheckCircle2,
   Clock, AlertTriangle, Navigation, Copy, Check, Anchor, Info,
 } from 'lucide-react';
+import { updateShipment, addActivity } from '../db/schema.js';
+import { timeAgo } from '../utils/activityLog.js';
 import {
   getDirectTrackingUrl, getBestRef,
   getTrackingLog, addTrackingEvent, setLastChecked, getLastChecked,
   fetchVesselPosition, isTrackingConfigured,
 } from '../utils/tracking.js';
-import { updateShipment, addActivity } from '../db/schema.js';
-import { timeAgo } from '../utils/activityLog.js';
 
 // ─── Status options for quick update ─────────────────────────────────────────
 
@@ -64,6 +64,8 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
   const [updatingStatus, setUpdatingStatus] = useState(null);
   const [noteInput, setNoteInput]   = useState('');
   const [savingNote, setSavingNote] = useState(false);
+  const [editingIMO, setEditingIMO] = useState(false);
+  const [imoInput, setImoInput]     = useState(shipment.imoNumber || '');
 
   const ref      = getBestRef(shipment);
   const trackUrl = ref ? getDirectTrackingUrl(shipment.carrier, ref) : null;
@@ -100,7 +102,20 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
     }
   }
 
-  // ── "I checked it" — log a check-in without status change ────────────────
+  // ── Save IMO number ───────────────────────────────────────────────────────
+  async function handleSaveIMO() {
+    const cleaned = imoInput.trim().replace(/\D/g, '');
+    if (!cleaned) return;
+    await updateShipment(shipment.id, { imoNumber: cleaned });
+    await addActivity({
+      id: crypto.randomUUID(), type: 'note',
+      message: `IMO number set: ${cleaned}`,
+      shipmentId: shipment.id, timestamp: new Date().toISOString(),
+    });
+    setEditingIMO(false);
+    setImoInput(cleaned);
+    if (onUpdate) onUpdate();
+  }
 
   function handleChecked() {
     const statusLabels = { planned: 'Planned', booked: 'Booked', in_transit: 'In Transit', arrived: 'Arrived', delivered: 'Delivered' };
@@ -260,11 +275,33 @@ export default function TrackingTab({ T, shipment, onUpdate }) {
       {hasVessel && (
         <div style={{ marginBottom: 20, padding: '14px 16px', borderRadius: 10, background: T.bg2, border: `1px solid ${T.border1}` }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: vesselPos ? 12 : 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0 }}>
               <Ship size={15} color={T.accent} />
               <span style={{ fontSize: 13, fontWeight: 600, color: T.text0 }}>{shipment.vessel}</span>
               {shipment.voyage && shipment.voyage !== 'TBD' && <span style={{ fontSize: 12, color: T.text3 }}>Voy. {shipment.voyage}</span>}
-              {shipment.imoNumber && <span style={{ fontSize: 11, color: T.text3, fontFamily: "'JetBrains Mono', monospace" }}>IMO {shipment.imoNumber}</span>}
+              {/* IMO display / inline edit */}
+              {!editingIMO && (
+                <span
+                  onClick={() => { setEditingIMO(true); setImoInput(shipment.imoNumber || ''); }}
+                  title="Click to set IMO number"
+                  style={{ fontSize: 11, color: shipment.imoNumber ? T.text3 : T.amber, fontFamily: "'JetBrains Mono', monospace", cursor: 'pointer', padding: '1px 6px', borderRadius: 4, border: `1px dashed ${shipment.imoNumber ? T.border1 : T.amberBorder}`, background: shipment.imoNumber ? 'transparent' : T.amberBg }}>
+                  {shipment.imoNumber ? `IMO ${shipment.imoNumber}` : '+ Add IMO'}
+                </span>
+              )}
+              {editingIMO && (
+                <form onSubmit={e => { e.preventDefault(); handleSaveIMO(); }} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <input
+                    autoFocus
+                    value={imoInput}
+                    onChange={e => setImoInput(e.target.value.replace(/\D/g, ''))}
+                    placeholder="7-digit IMO"
+                    maxLength={9}
+                    style={{ width: 110, padding: '3px 8px', borderRadius: 5, fontSize: 12, border: `1px solid ${T.accent}`, background: T.bg3, color: T.text0, outline: 'none', fontFamily: "'JetBrains Mono', monospace" }}
+                  />
+                  <button type="submit" style={{ padding: '3px 8px', borderRadius: 5, fontSize: 11, fontWeight: 600, color: 'white', background: T.accent, border: 'none', cursor: 'pointer' }}>Save</button>
+                  <button type="button" onClick={() => setEditingIMO(false)} style={{ padding: '3px 8px', borderRadius: 5, fontSize: 11, color: T.text2, background: T.bg3, border: `1px solid ${T.border1}`, cursor: 'pointer' }}>✕</button>
+                </form>
+              )}
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               <button onClick={handleFetchPosition} disabled={loadingPos || !configured}

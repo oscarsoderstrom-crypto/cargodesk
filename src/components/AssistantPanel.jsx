@@ -205,7 +205,25 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
 
   const workerUrl = getAiWorkerUrl();
   const hasWorker = !!workerUrl;
-  const pendingDocSaveRef = useRef(null); // stores doc metadata to save on navigate
+  const pendingDocSaveRef = useRef(null); // stores doc metadata to save when shipment opens
+
+  // Save pending document as soon as selectedShipment becomes available
+  useEffect(() => {
+    if (!selectedShipment || !pendingDocSaveRef.current) return;
+    const docToSave = { ...pendingDocSaveRef.current };
+    pendingDocSaveRef.current = null;
+    import('../db/schema.js').then(({ addDocument: addDoc, addActivity: addAct }) => {
+      addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...docToSave })
+        .then(() => addAct({
+          id: crypto.randomUUID(), type: 'document',
+          message: `Document attached via AI: ${docToSave.name}`,
+          shipmentId: selectedShipment.id,
+          timestamp: new Date().toISOString(),
+        }))
+        .then(() => { if (onDataChange) onDataChange(); })
+        .catch(err => console.error('pendingDocSave failed:', err));
+    });
+  }, [selectedShipment?.id]);
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
