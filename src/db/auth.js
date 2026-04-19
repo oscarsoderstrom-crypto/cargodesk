@@ -2,7 +2,7 @@
 // Login, logout, session check. Uses the same Appwrite client as appwrite.js.
 
 import { Client, Account } from 'appwrite';
-import { getAppwriteConfig, getDbSource } from './appwrite.js';
+import { getAppwriteConfig, getDbSource, resetClient as resetDbClient } from './appwrite.js';
 
 let _client = null;
 let _account = null;
@@ -45,6 +45,8 @@ export async function login(email, password) {
     const account = getAccount();
     await account.createEmailPasswordSession(email, password);
     const user = await account.get();
+    // Reset the database client so it picks up the new session on its next call
+    resetDbClient();
     return { success: true, user };
   } catch (err) {
     return { success: false, error: err.message };

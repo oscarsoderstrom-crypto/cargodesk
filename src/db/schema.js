@@ -192,6 +192,42 @@ export async function deleteTemplate(id) {
   return getDB().templates.delete(id);
 }
 
+// ─── Copy shipment to test (cloud/production → local test only) ───────────────
+
+export async function copyShipmentToTest(shipment) {
+  // Always writes to local IndexedDB test database, regardless of current mode
+  const Dexie = (await import('dexie')).default;
+  const testDb = new Dexie('CargoDesk_test');
+  testDb.version(4).stores({
+    projects:  'id, name, customer, status',
+    shipments: 'id, ref, projectId, customerRef, mode, status, origin, destination, carrier, etd, eta, updatedAt',
+    documents: 'id, shipmentId, name, type, date, quoteNumber, bookingNumber',
+    activities:'id, shipmentId, type, timestamp',
+    templates: 'id, name, mode',
+    quotes:    'id, shipmentId, carrier, origin, destination, createdAt, validUntil',
+  });
+  const copy = { ...shipment, id: shipment.id, updatedAt: new Date().toISOString() };
+  // Remove Appwrite-specific fields
+  delete copy.$id; delete copy.$createdAt; delete copy.$updatedAt;
+  await testDb.shipments.put(copy);
+  return copy;
+}
+
+// ─── QUOTES ───────────────────────────────────────────────────────────────────
+
+export async function getQuotes() {
+  if (isCloud()) return cloud.getQuotes();
+  try { const db = getDB(); return db.quotes ? await db.quotes.toArray() : []; } catch { return []; }
+}
+export async function addQuote(quote) {
+  if (isCloud()) return cloud.addQuote(quote);
+  try { return getDB().quotes.add(quote); } catch {}
+}
+export async function deleteQuote(id) {
+  if (isCloud()) return cloud.deleteQuote(id);
+  try { return getDB().quotes.delete(id); } catch {}
+}
+
 // ─── BACKUP (local only — export/import always uses IndexedDB) ────────────────
 
 export async function exportData(password) {

@@ -225,14 +225,16 @@ function docToTemplate(doc) {
 
 function documentToDoc(d) {
   const { id, shipmentId, name, type, date, ...rest } = d;
-  // Don't store base64Data in cloud — too large
-  const { base64Data, ...safeRest } = rest;
+  // Strip large fields that would exceed the 5000 char dataJson limit
+  const { base64Data, rawText, parsedData, text, ...safeRest } = rest;
+  const json = JSON.stringify(safeRest);
+  // Safety: truncate if somehow still too long
   return {
     shipmentId: shipmentId || '',
     name:       name       || '',
     type:       type       || 'document',
     date:       date       || '',
-    dataJson:   JSON.stringify(safeRest),
+    dataJson:   json.length > 4800 ? json.slice(0, 4800) : json,
   };
 }
 

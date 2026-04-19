@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, createContext, useContext, useCallback } from "react";
 import { Package, Ship, Plane, Truck, ChevronRight, ChevronDown, Plus, Search, Bell, FileText, DollarSign, CheckCircle2, Circle, Clock, AlertTriangle, X, Anchor, BarChart3, LayoutDashboard, Columns3, FolderOpen, ChevronLeft, Eye, Sun, Moon, RefreshCw, Settings, Check, Download, Calendar, List, Bot, LogOut } from "lucide-react";
-import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates, getDbSource } from "./db/schema.js";
+import { initDB, getProjects, getShipments, addShipment, addProject, updateShipment, toggleMilestone as dbToggleMilestone, getNextRef, deleteShipment, getMode, addDocument, addActivity, getActivities, getTemplates, getDbSource, getQuotes } from "./db/schema.js";
 import { getCurrentUser, logout } from "./db/auth.js";
 import { hasLocalPassword, hasActiveLocalSession, clearLocalSession } from "./utils/localAuth.js";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -170,11 +170,9 @@ export default function App(){
   const loadData=useCallback(async()=>{
     try{
       await initDB();
-      const[s,p,a,t]=await Promise.all([getShipments(),getProjects(),getActivities(50),getTemplates()]);
-      setShipments(s);setProjects(p);setActivities(a);setTemplates(t);setExp(p.map(pr=>pr.id));
-      // Load quotes if table exists
-      try{const db=await import("./db/schema.js").then(m=>m.getDB());if(db.quotes){const q=await db.quotes.toArray();setQuotes(q);}}catch{}
-      // Phase C: show morning brief once per day after data loads
+      const[s,p,a,t,q]=await Promise.all([getShipments(),getProjects(),getActivities(50),getTemplates(),getQuotes()]);
+      setShipments(s);setProjects(p);setActivities(a);setTemplates(t);setQuotes(q);
+      setExp(p.map(pr=>pr.id));
       if(shouldShowBrief())setShowMorningBrief(true);
     }
     catch(err){console.error("Load failed:",err);}finally{setLoading(false);}

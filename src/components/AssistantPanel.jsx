@@ -228,12 +228,55 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
           const b = analysis.bookingData;
           summary = `Booking confirmation from ${b.carrier || 'carrier'}: ${b.origin || '?'} → ${b.destination || '?'}`;
         }
-        setPendingDoc({ name: file.name, text: rawText?.text || rawText || '', summary });
+        const textContent = rawText?.text || rawText || '';
+        setPendingDoc({ name: file.name, text: textContent, summary });
+
+        // Save to Documents tab if a shipment is currently open
+        if (selectedShipment) {
+          try {
+            const { addDocument } = await import('../db/schema.js');
+            const { addActivity } = await import('../db/schema.js');
+            await addDocument({
+              id: crypto.randomUUID(),
+              shipmentId: selectedShipment.id,
+              name: file.name,
+              type: analysis.isBookingConfirmation ? 'booking_confirmation' : 'document',
+              date: new Date().toISOString().split('T')[0],
+              quoteNumber: analysis.bookingData?.references?.quotationNumber || null,
+              bookingNumber: analysis.bookingData?.references?.bookingReference || analysis.bookingData?.references?.ourReference || null,
+            });
+            await addActivity({
+              id: crypto.randomUUID(), type: 'document',
+              message: `Document attached via AI assistant: ${file.name}`,
+              shipmentId: selectedShipment.id,
+              timestamp: new Date().toISOString(),
+            });
+            if (onDataChange) onDataChange();
+          } catch (err) {
+            console.error('Could not save document:', err);
+          }
+        }
+
       } else if (name.endsWith('.msg')) {
         const msg = await processMsgFile(file);
         if (msg) {
           const body = msg.bodyText || '';
           setPendingDoc({ name: file.name, text: `Subject: ${msg.subject}\nFrom: ${msg.sender}\n\n${body}`, summary: `Email: ${msg.subject}` });
+
+          // Save .msg to Documents tab if shipment open
+          if (selectedShipment) {
+            try {
+              const { addDocument } = await import('../db/schema.js');
+              await addDocument({
+                id: crypto.randomUUID(),
+                shipmentId: selectedShipment.id,
+                name: file.name,
+                type: 'email',
+                date: new Date().toISOString().split('T')[0],
+              });
+              if (onDataChange) onDataChange();
+            } catch {}
+          }
         }
       } else {
         setPendingDoc({ name: file.name, text: '', summary: `File: ${file.name} (unsupported type — describe what to do)` });

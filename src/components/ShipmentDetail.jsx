@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, AlertTriangle, Receipt, Navigation } from "lucide-react";
+import { ChevronLeft, Eye, DollarSign, FileText, CheckCircle2, Circle, Clock, Settings, X, Check, Plus, Trash2, Ship, Plane, Truck, FolderOpen, Leaf, MessageSquare, ChevronDown, Printer, Calendar, FileDown, Bookmark, AlertTriangle, Receipt, Navigation, Copy } from "lucide-react";
 import CostsTab from "./CostsTab.jsx";
 import DocumentsTab from "./DocumentsTab.jsx";
 import NotesTab from "./NotesTab.jsx";
@@ -7,7 +7,7 @@ import TrackingTab from "./TrackingTab.jsx";
 import PortSelect from "./PortSelect.jsx";
 import CarrierSelect from "./CarrierSelect.jsx";
 import ContainerSelect from "./ContainerSelect.jsx";
-import { updateShipment } from "../db/schema.js";
+import { updateShipment, getDbSource, copyShipmentToTest } from "../db/schema.js";
 import { toEUR, formatEUR } from "../utils/currency.js";
 import { formatContainer } from "../utils/containers.js";
 import { generateCMR, hasTruckingLeg } from "../utils/cmrGenerator.js";
@@ -237,6 +237,21 @@ export default function ShipmentDetail({ T, shipment, project, statusCfg, onBack
                 <button onClick={() => generateCMR(shipment, project)}
                   style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.accent, background: T.accentGlow, border: `1px solid rgba(59,130,246,0.2)`, cursor: "pointer" }}>
                   <Printer size={12} /> Print CMR
+                </button>
+              )}
+              {/* Copy to test — only visible in cloud/production mode */}
+              {getDbSource() === 'cloud' && (
+                <button onClick={async () => {
+                  if (!window.confirm(`Copy "${shipment.ref || shipment.customerRef}" to local test database?`)) return;
+                  try {
+                    await copyShipmentToTest(shipment);
+                    alert('Copied to local test database. Switch to Local mode to work with it.');
+                  } catch (e) {
+                    alert(`Copy failed: ${e.message}`);
+                  }
+                }}
+                  style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, color: T.purple, background: T.purpleBg, border: `1px solid ${T.purpleBorder}`, cursor: "pointer" }}>
+                  <Copy size={12} /> Copy to test
                 </button>
               )}
               <button onClick={async () => {
