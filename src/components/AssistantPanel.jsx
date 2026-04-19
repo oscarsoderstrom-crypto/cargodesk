@@ -207,21 +207,32 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
   const hasWorker = !!workerUrl;
   const pendingDocSaveRef = useRef(null); // stores doc metadata to save when shipment opens
 
-  // Save pending document as soon as selectedShipment becomes available
+  // Save pending document (and apply booking data) as soon as selectedShipment becomes available
   useEffect(() => {
     if (!selectedShipment || !pendingDocSaveRef.current) return;
     const docToSave = { ...pendingDocSaveRef.current };
+    const bookingAnalysis = pendingDocSaveRef._bookingAnalysis || null;
     pendingDocSaveRef.current = null;
-    import('../db/schema.js').then(({ addDocument: addDoc, addActivity: addAct }) => {
-      addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...docToSave })
-        .then(() => addAct({
-          id: crypto.randomUUID(), type: 'document',
-          message: `Document attached via AI: ${docToSave.name}`,
-          shipmentId: selectedShipment.id,
-          timestamp: new Date().toISOString(),
-        }))
-        .then(() => { if (onDataChange) onDataChange(); })
-        .catch(err => console.error('pendingDocSave failed:', err));
+    pendingDocSaveRef._bookingAnalysis = null;
+
+    import('../db/schema.js').then(async ({ addDocument: addDoc, addActivity: addAct, updateShipment: updateS, getShipment: getS }) => {
+      try {
+        await addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...docToSave });
+        if (bookingAnalysis?.isBookingConfirmation && bookingAnalysis.shipmentUpdates) {
+          const { applyBookingToShipment } = await import('../parsers/documentIntelligence.js');
+          const current = await getS(selectedShipment.id);
+          if (current) {
+            const updated = applyBookingToShipment(current, bookingAnalysis.shipmentUpdates);
+            const { _parsedBooking, ...saveData } = updated;
+            await updateS(selectedShipment.id, { ...saveData, parsedBooking: bookingAnalysis.bookingData, updatedAt: new Date().toISOString() });
+            const ms = bookingAnalysis.shipmentUpdates.milestones || [];
+            await addAct({ id: crypto.randomUUID(), type: 'document', message: `Booking applied via AI: ${docToSave.name}${ms.length ? ` — ${ms.length} deadlines added` : ''}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+          }
+        } else {
+          await addAct({ id: crypto.randomUUID(), type: 'document', message: `Document attached via AI: ${docToSave.name}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+        }
+        if (onDataChange) onDataChange();
+      } catch (err) { console.error('pendingDocSave failed:', err); }
     });
   }, [selectedShipment?.id]);
 
@@ -258,16 +269,32 @@ export default function AssistantPanel({ shipments = [], projects = [], quotes =
           quoteNumber: analysis.bookingData?.references?.quotationNumber || null,
           bookingNumber: analysis.bookingData?.references?.bookingReference || analysis.bookingData?.references?.ourReference || null,
         };
+        // Also store the full analysis so useEffect can apply milestones on navigation
+        pendingDocSaveRef._bookingAnalysis = analysis.isBookingConfirmation ? analysis : null;
 
-        // If a shipment is already open, save immediately
+        // If a shipment is already open AND this is a booking, apply full data (milestones, fields)
         if (selectedShipment) {
           try {
-            const { addDocument: addDoc, addActivity: addAct } = await import('../db/schema.js');
+            const { addDocument: addDoc, addActivity: addAct, updateShipment: updateS, getShipment: getS } = await import('../db/schema.js');
+            const { applyBookingToShipment } = await import('../parsers/documentIntelligence.js');
+            // Save document record
             await addDoc({ id: crypto.randomUUID(), shipmentId: selectedShipment.id, ...pendingDocSaveRef.current });
-            await addAct({ id: crypto.randomUUID(), type: 'document', message: `Document attached via AI: ${file.name}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+            // Apply booking fields + milestones if it's a booking confirmation
+            if (analysis.isBookingConfirmation && analysis.shipmentUpdates) {
+              const current = await getS(selectedShipment.id);
+              if (current) {
+                const updated = applyBookingToShipment(current, analysis.shipmentUpdates);
+                const { _parsedBooking, ...saveData } = updated;
+                await updateS(selectedShipment.id, { ...saveData, parsedBooking: analysis.bookingData, updatedAt: new Date().toISOString() });
+                const ms = analysis.shipmentUpdates.milestones || [];
+                await addAct({ id: crypto.randomUUID(), type: 'document', message: `Booking applied via AI: ${file.name}${ms.length ? ` — ${ms.length} deadlines added` : ''}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+              }
+            } else {
+              await addAct({ id: crypto.randomUUID(), type: 'document', message: `Document attached via AI: ${file.name}`, shipmentId: selectedShipment.id, timestamp: new Date().toISOString() });
+            }
             pendingDocSaveRef.current = null;
             if (onDataChange) onDataChange();
-          } catch (err) { console.error('Could not save document:', err); }
+          } catch (err) { console.error('Could not apply booking from AI panel:', err); }
         }
 
       } else if (name.endsWith('.msg')) {

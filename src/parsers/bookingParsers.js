@@ -95,10 +95,12 @@ export function parseHapagLloydBooking(text) {
       // Look for port code patterns like (FIHEL) → (DEBRV)
       const portMatch = line.match(/([A-Z\s\-]+)\s*\(([A-Z]{5})\)\s+([A-Z\s\-]+)\s*\(([A-Z]{5})\)/);
       if (portMatch) {
-        // Look ahead for vessel/voyage/ETD/ETA in next few lines
-        const context = lines.slice(i, i + 5).join(' ');
+        // Look ahead further to catch IMO which may be several lines down
+        const context = lines.slice(i, i + 10).join(' ');
         const vessel = context.match(/(?:Vessel|By)\s+([A-Z][A-Z\s]+?)(?:\s*,|\s*Voy|\s*DP)/i)?.[1]?.trim();
         const voyage = context.match(/Voy(?:age)?\.?\s*(?:No)?[:\s]*([^\s,]+)/i)?.[1]?.trim();
+        const imoMatch = context.match(/IMO\s*No[:\s]*(\d{7,})/i);
+        const imo = imoMatch?.[1] || null;
         const etdStr = context.match(/ETD[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
         const etaStr = context.match(/ETA[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
         // Also try date patterns like "04-May-2026 18:00  08-May-2026 08:02"
@@ -109,11 +111,19 @@ export function parseHapagLloydBooking(text) {
           to: `${portMatch[3].trim()} (${portMatch[4]})`,
           vessel: vessel || null,
           voyage: voyage || null,
+          imo: imo || null,
           etd: parseHLDate(etdStr || dates[0]),
           eta: parseHLDate(etaStr || dates[1]),
         });
       }
     }
+  }
+
+  // Global IMO fallback — search full text if routing legs didn't capture it
+  // Assigns first IMO found to first routing leg (the main ocean vessel)
+  if (result.routing.length > 0 && !result.routing[0].imo) {
+    const globalImo = text.match(/IMO\s*No[:\s]*(\d{7,})/i)?.[1];
+    if (globalImo) result.routing[0] = { ...result.routing[0], imo: globalImo };
   }
 
   // ── Deadlines ──
