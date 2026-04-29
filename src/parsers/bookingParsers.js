@@ -69,8 +69,6 @@ export function parseHapagLloydBooking(text) {
     const to = block.match(/To:\s*(.+?)(?:\n|By:)/i)?.[1]?.trim();
     const vessel = block.match(/(?:By:.*?Vessel|Vessel)\s+([^,\n]+)/i)?.[1]?.trim();
     const voyage = block.match(/Voy(?:age)?\.?\s*(?:No)?[:\s]*([^\s,]+)/i)?.[1]?.trim();
-    const imoMatch = block.match(/IMO\s*(?:No|Number)?[:\s]*(\d{7,})/i);
-    const imo = imoMatch?.[1] || null;
     const etdStr = block.match(/ETD[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
     const etaStr = block.match(/ETA[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
 
@@ -80,50 +78,59 @@ export function parseHapagLloydBooking(text) {
         to: cleanPort(to),
         vessel: vessel || null,
         voyage: voyage || null,
-        imo: imo || null,
         etd: parseHLDate(etdStr),
         eta: parseHLDate(etaStr),
       });
     }
   }
 
-  // Also try table-style routing (tab/space separated columns)
+  // Table-style routing — HL PDFs use a multi-column table where port name/code
+  // and vessel info span several lines each. Instead of parsing the table structure,
+  // extract the key fields directly from the full text.
   if (result.routing.length === 0) {
-    const lines = text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Look for port code patterns like (FIHEL) → (DEBRV)
-      const portMatch = line.match(/([A-Z\s\-]+)\s*\(([A-Z]{5})\)\s+([A-Z\s\-]+)\s*\(([A-Z]{5})\)/);
-      if (portMatch) {
-        // Look ahead further to catch IMO which may be several lines down
-        const context = lines.slice(i, i + 10).join(' ');
-        const vessel = context.match(/(?:Vessel|By)\s+([A-Z][A-Z\s]+?)(?:\s*,|\s*Voy|\s*DP)/i)?.[1]?.trim();
-        const voyage = context.match(/Voy(?:age)?\.?\s*(?:No)?[:\s]*([^\s,]+)/i)?.[1]?.trim();
-        const imoMatch = context.match(/IMO\s*No[:\s]*(\d{7,})/i);
-        const imo = imoMatch?.[1] || null;
-        const etdStr = context.match(/ETD[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
-        const etaStr = context.match(/ETA[:\s]*([\d\-\w]+\s*\d{2}:\d{2})/i)?.[1];
-        // Also try date patterns like "04-May-2026 18:00  08-May-2026 08:02"
-        const dates = context.match(/(\d{2}-\w{3}-\d{4}\s+\d{2}:\d{2})/g) || [];
+    // Extract all 5-letter port codes in order of appearance → origin, ...transshipments, destination
+    const portCodeMatches = [...text.matchAll(/\(([A-Z]{5})\)/g)];
+    const portCodes = [...new Set(portCodeMatches.map(m => m[1]))]; // dedupe, preserve order
 
+    // Extract vessel names — HL format: "Vessel\nVESSEL NAME\nDP Voyage:" or "Vessel VESSEL NAME"
+    const vesselMatches = [...text.matchAll(/Vessel\s*\n\s*([A-Z][A-Z\s]+?)(?:\n|DP\s*Voyage)/gi)];
+    const vessels = vesselMatches.map(m => m[1].trim());
+
+    // Extract voyage numbers — "Voy. No: UNIF 1226" (may have letters + digits)
+    const voyMatches = [...text.matchAll(/Voy\.\s*No[:\s]*(\S+(?:\s+\d+)?)/gi)];
+    const voyages = voyMatches.map(m => m[1].trim());
+
+    // Extract IMO numbers in order of appearance
+    const imoMatches = [...text.matchAll(/IMO\s*No[:\s]*(\d{6,})/gi)];
+    const imos = imoMatches.map(m => m[1]);
+
+    // Extract all dates in order
+    const allDates = [...text.matchAll(/(\d{2}-\w{3}-\d{4})\s*(\d{2}:\d{2})?/g)]
+      .map(m => parseHLDate(m[1] + (m[2] ? ' ' + m[2] : '')))
+      .filter(Boolean);
+
+    // Build routing legs from port codes
+    if (portCodes.length >= 2) {
+      for (let i = 0; i < portCodes.length - 1; i++) {
         result.routing.push({
-          from: `${portMatch[1].trim()} (${portMatch[2]})`,
-          to: `${portMatch[3].trim()} (${portMatch[4]})`,
-          vessel: vessel || null,
-          voyage: voyage || null,
-          imo: imo || null,
-          etd: parseHLDate(etdStr || dates[0]),
-          eta: parseHLDate(etaStr || dates[1]),
+          from: portCodes[i],
+          to:   portCodes[i + 1],
+          vessel: vessels[i] || vessels[0] || null,
+          voyage: voyages[i] || voyages[0] || null,
+          imo:    imos[i] || imos[0] || null,
+          etd:    allDates[i * 2] || allDates[0] || null,
+          eta:    allDates[i * 2 + 1] || allDates[1] || null,
         });
       }
     }
+
+    // Store all IMOs on the result for easy access in bookingToShipmentUpdates
+    if (imos.length > 0) result.imoNumber = imos[0];
   }
 
-  // Global IMO fallback — search full text if routing legs didn't capture it
-  // Assigns first IMO found to first routing leg (the main ocean vessel)
-  if (result.routing.length > 0 && !result.routing[0].imo) {
-    const globalImo = text.match(/IMO\s*No[:\s]*(\d{7,})/i)?.[1];
-    if (globalImo) result.routing[0] = { ...result.routing[0], imo: globalImo };
+  // Global IMO fallback — ensure result.imoNumber is always set if any IMO appears in the text
+  if (!result.imoNumber) {
+    result.imoNumber = text.match(/IMO\s*No[:\s]*(\d{6,})/i)?.[1] || null;
   }
 
   // ── Deadlines ──
@@ -198,12 +205,8 @@ export function parseMSCBooking(text) {
   // Port of Loading
   const pol = text.match(/PORT\s*OF\s*LOADING[:\s]*([A-Z\s]+?)(?:\n|VESSEL)/i)?.[1]?.trim();
   
-  // First vessel — extract name and IMO (LLOYDS NO.) from format: "MSC VALA II (LLOYDS NO. 9344722) / PT"
-  const vessel1Raw = text.match(/VESSEL\s*(?:NAME)?\s*(?:\/\s*FLAG)?[:\s]*([^\n]+)/i)?.[1] || '';
-  const vessel1 = vessel1Raw.match(/^([^\n(\/]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i)?.[1]?.trim() ||
-                  vessel1Raw.split(/[\n(\/]/)[0]?.trim() || null;
-  const vessel1IMO = vessel1Raw.match(/LLOYDS\s*NO\.?\s*(\d{7,})/i)?.[1] ||
-                     vessel1Raw.match(/IMO[:\s]*(\d{7,})/i)?.[1] || null;
+  // First vessel
+  const vessel1 = text.match(/VESSEL\s*(?:NAME)?\s*(?:\/\s*FLAG)?[:\s]*([^\n(]+?)(?:\s*\(|\s*\/\s*[A-Z]{2}\b)/i)?.[1]?.trim();
   const voy1 = text.match(/VOYAGE\s*(?:NUMBER)?[:\s]*(\S+)/i)?.[1]?.trim();
   
   // ETD/ETA for loading port — MSC format: "EST. TIME OF ARRIVAL/DEPARTURE" followed by two dates
@@ -235,7 +238,6 @@ export function parseMSCBooking(text) {
       to: ts1 || pod || '',
       vessel: vessel1 || null,
       voyage: voy1 || null,
-      imo: vessel1IMO || null,
       etd: loadingETD,
       eta: null,
     };
@@ -345,10 +347,12 @@ export function bookingToShipmentUpdates(parsed) {
   if (firstLeg?.etd) updates.etd = isoDate(firstLeg.etd);
   if (lastLeg?.eta) updates.eta = isoDate(lastLeg.eta);
 
-  // Vessel + voyage from first ocean leg
+  // Vessel + voyage + IMO from first ocean leg
   if (firstLeg?.vessel) updates.vessel = firstLeg.vessel;
   if (firstLeg?.voyage) updates.voyage = firstLeg.voyage;
   if (firstLeg?.imo)    updates.imoNumber = firstLeg.imo;
+  // Also try the top-level imoNumber set by the global fallback
+  if (!updates.imoNumber && parsed.imoNumber) updates.imoNumber = parsed.imoNumber;
 
   // Full routing string
   if (parsed.routing.length > 0) {
