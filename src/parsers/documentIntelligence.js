@@ -126,10 +126,10 @@ export function applyBookingToShipment(shipment, updates) {
 
   const updated = { ...shipment };
 
-  // Apply field updates (don't overwrite if already set, unless it's a refinement)
+  // Apply field updates
   const fields = ['carrier', 'origin', 'destination', 'etd', 'eta', 'vessel', 'voyage',
                   'routing', 'bookingNumber', 'customerRef', 'blNumber', 'quotationNumber',
-                  'containerCount', 'containerTypeId', 'imoNumber'];
+                  'containerCount', 'containerTypeId', 'imoNumber', 'schedule'];
 
   for (const field of fields) {
     if (updates[field] !== undefined && updates[field] !== null) {
@@ -138,34 +138,60 @@ export function applyBookingToShipment(shipment, updates) {
   }
 
   // Track original ETD/ETA — only set once
-  if (updates.etd && !updated.originalETD) {
-    updated.originalETD = updates.etd;
-  }
-  if (updates.eta && !updated.originalETA) {
-    updated.originalETA = updates.eta;
-  }
+  if (updates.etd && !updated.originalETD) updated.originalETD = updates.etd;
+  if (updates.eta && !updated.originalETA) updated.originalETA = updates.eta;
 
-  // Merge milestones (add new ones, don't duplicate by type)
+  // Merge milestones — smart dedup by type AND fuzzy label
   if (updates.milestones && updates.milestones.length > 0) {
-    const existing = updated.milestones || [];
-    const existingTypes = new Set(existing.map(m => m.type));
-    const newMilestones = updates.milestones.filter(m => !existingTypes.has(m.type));
-    updated.milestones = [...existing, ...newMilestones]
-      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const existing = (updated.milestones || []).map(m => ({ ...m }));
+
+    // Normalize label for fuzzy matching
+    const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    for (const incoming of updates.milestones) {
+      const incomingNorm = norm(incoming.label);
+      const incomingType = incoming.type;
+
+      // Find an existing milestone that matches by type OR by normalized label
+      const matchIdx = existing.findIndex(m =>
+        (incomingType && m.type === incomingType) ||
+        (incomingNorm && norm(m.label) === incomingNorm)
+      );
+
+      if (matchIdx >= 0) {
+        // Update the existing milestone with the date from the booking
+        // but preserve done/completed state
+        existing[matchIdx] = {
+          ...existing[matchIdx],
+          date:     incoming.date     || existing[matchIdx].date,
+          dateTime: incoming.dateTime || existing[matchIdx].dateTime,
+          type:     incoming.type     || existing[matchIdx].type,
+          source:   incoming.source,
+        };
+      } else {
+        // Genuinely new milestone — add it
+        existing.push(incoming);
+      }
+    }
+
+    // Sort by date (TBD milestones go to top)
+    updated.milestones = existing.sort((a, b) => {
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return -1;
+      if (!b.date) return 1;
+      return a.date.localeCompare(b.date);
+    });
   }
 
   // Store parsed booking data
-  if (updates._parsedBooking) {
-    updated.parsedBooking = updates._parsedBooking;
-  }
+  if (updates._parsedBooking) updated.parsedBooking = updates._parsedBooking;
 
   // Advance status Planned → Booked
-  if (updated.status === 'Planned' && updates.bookingNumber) {
-    updated.status = 'Booked';
+  if ((updated.status === 'Planned' || updated.status === 'planned') && updates.bookingNumber) {
+    updated.status = 'booked';
   }
 
   updated.updatedAt = new Date().toISOString();
-
   return updated;
 }
 

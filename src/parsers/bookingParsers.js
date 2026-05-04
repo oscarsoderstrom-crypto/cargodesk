@@ -85,50 +85,48 @@ export function parseHapagLloydBooking(text) {
   }
 
   // Table-style routing — HL PDFs use a multi-column table where port name/code
-  // and vessel info span several lines each. Instead of parsing the table structure,
-  // extract the key fields directly from the full text.
+  // and vessel info each span several lines. Extract key fields directly.
   if (result.routing.length === 0) {
-    // Extract all 5-letter port codes in order of appearance → origin, ...transshipments, destination
+    // Port codes in order of appearance → origin, transhipments, destination
     const portCodeMatches = [...text.matchAll(/\(([A-Z]{5})\)/g)];
-    const portCodes = [...new Set(portCodeMatches.map(m => m[1]))]; // dedupe, preserve order
+    const portCodes = [...new Set(portCodeMatches.map(m => m[1]))];
 
-    // Extract vessel names — HL format: "Vessel\nVESSEL NAME\nDP Voyage:" or "Vessel VESSEL NAME"
+    // Vessel names: "Vessel\nVESSEL NAME\nDP Voyage:" or "Vessel VESSEL NAME"
     const vesselMatches = [...text.matchAll(/Vessel\s*\n\s*([A-Z][A-Z\s]+?)(?:\n|DP\s*Voyage)/gi)];
     const vessels = vesselMatches.map(m => m[1].trim());
 
-    // Extract voyage numbers — "Voy. No: UNIF 1226" (may have letters + digits)
+    // Voyage numbers: "Voy. No: UNIF 1226"
     const voyMatches = [...text.matchAll(/Voy\.\s*No[:\s]*(\S+(?:\s+\d+)?)/gi)];
     const voyages = voyMatches.map(m => m[1].trim());
 
-    // Extract IMO numbers in order of appearance
+    // IMO numbers in order
     const imoMatches = [...text.matchAll(/IMO\s*No[:\s]*(\d{6,})/gi)];
     const imos = imoMatches.map(m => m[1]);
 
-    // Extract all dates in order
+    // All dates in order
     const allDates = [...text.matchAll(/(\d{2}-\w{3}-\d{4})\s*(\d{2}:\d{2})?/g)]
       .map(m => parseHLDate(m[1] + (m[2] ? ' ' + m[2] : '')))
       .filter(Boolean);
 
-    // Build routing legs from port codes
     if (portCodes.length >= 2) {
       for (let i = 0; i < portCodes.length - 1; i++) {
         result.routing.push({
-          from: portCodes[i],
-          to:   portCodes[i + 1],
+          from:   portCodes[i],
+          to:     portCodes[i + 1],
           vessel: vessels[i] || vessels[0] || null,
           voyage: voyages[i] || voyages[0] || null,
-          imo:    imos[i] || imos[0] || null,
-          etd:    allDates[i * 2] || allDates[0] || null,
-          eta:    allDates[i * 2 + 1] || allDates[1] || null,
+          imo:    imos[i]    || imos[0]    || null,
+          etd:    allDates[i * 2]     || null,
+          eta:    allDates[i * 2 + 1] || null,
         });
       }
     }
 
-    // Store all IMOs on the result for easy access in bookingToShipmentUpdates
+    // Store first IMO on result directly
     if (imos.length > 0) result.imoNumber = imos[0];
   }
 
-  // Global IMO fallback — ensure result.imoNumber is always set if any IMO appears in the text
+  // Global IMO fallback
   if (!result.imoNumber) {
     result.imoNumber = text.match(/IMO\s*No[:\s]*(\d{6,})/i)?.[1] || null;
   }
@@ -335,43 +333,60 @@ export function bookingToShipmentUpdates(parsed) {
 
   const updates = {};
   const firstLeg = parsed.routing[0];
-  const lastLeg = parsed.routing[parsed.routing.length - 1];
+  const lastLeg  = parsed.routing[parsed.routing.length - 1];
+
+  // For multi-leg routes (feeder + ocean), use the LAST leg for the main vessel.
+  // The last leg is always the ocean vessel (e.g. MAERSK COLUMBUS Helsinki→Houston).
+  // The first leg is typically the feeder (e.g. TBNRNE FEEDER Helsinki→Bremerhaven).
+  const mainLeg = parsed.routing.length > 1 ? lastLeg : firstLeg;
 
   updates.carrier = parsed.carrier;
 
-  // Origin/destination from first/last routing leg
-  if (firstLeg?.from) updates.origin = cleanPort(firstLeg.from);
-  if (lastLeg?.to) updates.destination = cleanPort(lastLeg.to);
+  // Origin = first port of first leg, Destination = last port of last leg
+  if (firstLeg?.from) updates.origin      = cleanPort(firstLeg.from);
+  if (lastLeg?.to)    updates.destination = cleanPort(lastLeg.to);
 
-  // ETD = first leg departure, ETA = last leg arrival
+  // ETD = first leg departure (Helsinki), ETA = last leg arrival (Houston)
   if (firstLeg?.etd) updates.etd = isoDate(firstLeg.etd);
-  if (lastLeg?.eta) updates.eta = isoDate(lastLeg.eta);
+  if (lastLeg?.eta)  updates.eta = isoDate(lastLeg.eta);
 
-  // Vessel + voyage + IMO from first ocean leg
-  if (firstLeg?.vessel) updates.vessel = firstLeg.vessel;
-  if (firstLeg?.voyage) updates.voyage = firstLeg.voyage;
-  if (firstLeg?.imo)    updates.imoNumber = firstLeg.imo;
-  // Also try the top-level imoNumber set by the global fallback
+  // Main vessel + voyage + IMO from the last (ocean) leg
+  if (mainLeg?.vessel) updates.vessel    = mainLeg.vessel;
+  if (mainLeg?.voyage) updates.voyage    = mainLeg.voyage;
+  if (mainLeg?.imo)    updates.imoNumber = mainLeg.imo;
+
+  // Top-level IMO fallback (set by global search in parser)
   if (!updates.imoNumber && parsed.imoNumber) updates.imoNumber = parsed.imoNumber;
 
-  // Full routing string
+  // Full routing string — e.g. "Helsinki → Bremerhaven → Houston"
   if (parsed.routing.length > 0) {
     updates.routing = parsed.routing
       .map(l => `${cleanPort(l.from)} → ${cleanPort(l.to)}`)
       .join(' → ')
-      .replace(/ → ([^→]+) → \1/g, ' → $1'); // dedupe
+      .replace(/ → ([^→]+) → \1/g, ' → $1'); // dedupe repeated ports
   }
+
+  // Full schedule — store all legs with vessel/voyage/IMO/ETD/ETA for the overview
+  updates.schedule = parsed.routing.map(l => ({
+    from:   cleanPort(l.from),
+    to:     cleanPort(l.to),
+    vessel: l.vessel || null,
+    voyage: l.voyage || null,
+    imo:    l.imo    || null,
+    etd:    isoDate(l.etd),
+    eta:    isoDate(l.eta),
+  }));
 
   // Booking number / reference
   if (parsed.carrier === 'Hapag-Lloyd') {
-    if (parsed.references.ourReference) updates.bookingNumber = parsed.references.ourReference;
-    if (parsed.references.yourReference) updates.customerRef = parsed.references.yourReference;
-    if (parsed.references.blNumber) updates.blNumber = parsed.references.blNumber;
+    if (parsed.references.ourReference)   updates.bookingNumber  = parsed.references.ourReference;
+    if (parsed.references.yourReference)  updates.customerRef    = parsed.references.yourReference;
+    if (parsed.references.blNumber)       updates.blNumber       = parsed.references.blNumber;
     if (parsed.references.quotationNumber) updates.quotationNumber = parsed.references.quotationNumber;
   } else if (parsed.carrier === 'MSC') {
     if (parsed.references.bookingReference) updates.bookingNumber = parsed.references.bookingReference;
-    if (parsed.references.customerReference) updates.customerRef = parsed.references.customerReference;
-    if (parsed.references.swbNumber) updates.blNumber = parsed.references.swbNumber;
+    if (parsed.references.customerReference) updates.customerRef  = parsed.references.customerReference;
+    if (parsed.references.swbNumber)        updates.blNumber      = parsed.references.swbNumber;
   }
 
   // Container
@@ -381,43 +396,53 @@ export function bookingToShipmentUpdates(parsed) {
     updates.containerTypeId = typeMap[parsed.container.equipType] || parsed.container.equipType;
   }
   if (parsed.container.summary) {
-    // "1x45GP" → count + type
     const sm = parsed.container.summary.match(/(\d+)\s*x?\s*(\w+)/i);
-    if (sm) {
-      updates.containerCount = +sm[1];
-      updates.containerTypeId = sm[2];
-    }
+    if (sm) { updates.containerCount = +sm[1]; updates.containerTypeId = sm[2]; }
   }
 
-  // Milestones from deadlines
+  // Milestones from deadlines (cut-offs)
   updates.milestones = parsed.deadlines.map(d => ({
-    id: d.type + '_' + Date.now(),
-    label: d.label,
-    date: isoDate(d.date),
-    dateTime: d.date,
-    type: d.type,
+    id:        d.type + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
+    label:     d.label,
+    date:      isoDate(d.date),
+    dateTime:  d.date,
+    type:      d.type,
+    done:      false,
     completed: false,
-    source: 'booking_confirmation',
+    source:    'booking_confirmation',
   }));
 
-  // Add routing leg ETDs as milestones
+  // Add ETD/ETA milestones for each leg
   parsed.routing.forEach((leg, i) => {
-    if (i > 0 && leg.etd) {
+    const isFirst = i === 0;
+    const isLast  = i === parsed.routing.length - 1;
+    if (leg.etd) {
       updates.milestones.push({
-        id: `ts_dep_${i}_${Date.now()}`,
-        label: `Depart ${cleanPort(leg.from)}`,
-        date: isoDate(leg.etd),
+        id:     `etd_${i}_${Date.now()}`,
+        label:  isFirst ? `ETD ${cleanPort(leg.from)}` : `Depart ${cleanPort(leg.from)}`,
+        date:   isoDate(leg.etd),
         dateTime: leg.etd,
-        type: 'transhipment_departure',
+        type:   isFirst ? 'etd' : 'transhipment_departure',
+        done:   false,
+        completed: false,
+        source: 'booking_confirmation',
+      });
+    }
+    if (isLast && leg.eta) {
+      updates.milestones.push({
+        id:     `eta_last_${Date.now()}`,
+        label:  `ETA ${cleanPort(leg.to)}`,
+        date:   isoDate(leg.eta),
+        dateTime: leg.eta,
+        type:   'eta',
+        done:   false,
         completed: false,
         source: 'booking_confirmation',
       });
     }
   });
 
-  // Store full parsed data for reference
   updates._parsedBooking = parsed;
-
   return updates;
 }
 
